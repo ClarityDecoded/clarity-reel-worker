@@ -1,0 +1,128 @@
+name: Reel process
+
+# Drains the reel queue on a SCHEDULE, not per dump.
+#
+# It used to run on a repository_dispatch fired by the reel-enqueue Edge
+# Function, so every dump started its own job: 175 runs in 18 days, 50 of them
+# on one evening, over half of them ≤3 minutes — i.e. mostly checkout + npm
+# install to handle one reel. Nothing here is time critical: the ONLY deadline
+# is the 4am digest, so a burst can wait for the next slot and be drained in a
+# single run.
+#
+# Every 3 hours (not hourly, not daily) for two reasons: it bounds how big a
+# burst gets before it's processed, and spreading the work across the day is
+# the standing fix for the provider burst ceiling (gotchas #18, #19). The 11:00
+# UTC run is the last drain before the 11:30 digest.
+#
+# NO email here — that's the digest workflow's job.
+#
+# The concurrency group serialises runs: two slots never overlap, which is also
+# what makes reclaiming stranded `processing` rows safe (gotcha #59).
+on:
+  schedule:
+    - cron: "0 */3 * * *" # 00,03,06,09,12,15,18,21 UTC
+    - cron: "0 11 * * *" # last drain ~30 min before the digest
+  workflow_dispatch: {} # "process it now" — always runs, skips the queue probe
+
+concurrency:
+  group: reel-process
+  cancel-in-progress: false
+
+env:
+  PUBLIC_LOGS: "1" # public repo = public run logs
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    # 30 wasn't enough to drain a backlog (MAX_ITEMS_PER_RUN is 50) — runs were
+    # cancelled mid-item. The worker now reclaims a killed run's claim on the next
+    # start, so a timeout is recoverable rather than a stranded row, but a bigger
+    # budget means the queue actually empties in one pass.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      # Ask the queue BEFORE paying for checkout + node + npm install. A billed
+      # minute is the floor for any run, but an empty slot should cost that
+      # minute and nothing more. Runs first, with no working-directory, so it
+      # needs no repo on disk.
+      #
+      # It FAILS OPEN: any curl/network/secret problem leaves pending=1 and the
+      # run proceeds. Skipping a reel to save a minute is the wrong trade.
+      - name: Anything waiting?
+        id: probe
+        working-directory: .
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "manual run — draining regardless"
+            echo "pending=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # `processing` counts as waiting: a killed run strands its claim there
+          # and the next start reclaims it (gotcha #59).
+          body=$(curl -sS --max-time 20 \
+            -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+            "$SUPABASE_URL/rest/v1/reel_queue?select=id&status=in.(queued,processing)&limit=1" || echo "")
+          if [ "$body" = "[]" ]; then
+            echo "queue empty — stopping here"
+            echo "pending=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "work waiting"
+            echo "pending=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.probe.outputs.pending == '1'
+      - uses: actions/setup-node@v4
+        if: steps.probe.outputs.pending == '1'
+        with:
+          node-version: "22" # supabase-js needs Node 22+ (native WebSocket)
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install worker deps
+        if: steps.probe.outputs.pending == '1'
+        run: npm install --no-audit --no-fund
+      - name: Install yt-dlp
+        if: steps.probe.outputs.pending == '1' && contains(vars.RESOLVER_ORDER, 'ytdlp')
+        # Only when a run actually asks for that tier, so the default path adds
+        # no time. The binary is a single file from the project's own releases.
+        working-directory: .
+        run: |
+          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+      - name: Process the queue
+        if: steps.probe.outputs.pending == '1'
+        env:
+          MODE: process
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Extra free LLM/VLM providers — the router fails over across these.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          # Resolver tiers, tried in order. Unset = "rapidapi" = the original
+          # behaviour. Set the RESOLVER_ORDER repo VARIABLE (not secret) to
+          # "ytdlp,rapidapi" to try the free resolver first with the paid keys
+          # as fallback. YTDLP_COOKIES is optional and only needed if Instagram
+          # shows yt-dlp a login wall.
+          RESOLVER_ORDER: ${{ vars.RESOLVER_ORDER }}
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+          RAPIDAPI_KEYS: ${{ secrets.RAPIDAPI_KEYS }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
+          RAPIDAPI_URL_TEMPLATE: ${{ secrets.RAPIDAPI_URL_TEMPLATE }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          APP_URL: ${{ secrets.APP_URL }}
+          NVIDIA_LLM_MODEL: ${{ secrets.NVIDIA_LLM_MODEL }}
+          NVIDIA_VLM_MODEL: ${{ secrets.NVIDIA_VLM_MODEL }}
+          ASR_MODEL: ${{ secrets.ASR_MODEL }}
+        run: npm start

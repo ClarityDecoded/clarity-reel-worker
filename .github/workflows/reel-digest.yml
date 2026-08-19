@@ -1,0 +1,61 @@
+name: Reel digest
+
+# Sends ONE email summarising everything processed since the last digest
+# (reel_results + reel_queue errors with emailed_at IS NULL), then stamps
+# emailed_at. No heavy processing here — the reels were already handled by the
+# process workflow through the day. 11:30 UTC ≈ 4:30am Pacific (PDT) / 3:30am
+# (PST). GitHub cron is UTC and does NOT shift for DST — nudge by an hour if the
+# email lands at the wrong local time.
+on:
+  schedule:
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "TEST send: build from the most recent reels and DON'T stamp emailed_at (won't touch the real 4am digest)"
+        type: boolean
+        default: false
+  # Fired by the reel-test-digest Edge Function (the dashboard "Send test"
+  # button). Always a TEST send; client_payload.limit sets how many reels.
+  repository_dispatch:
+    types: [reel-test-digest]
+
+env:
+  PUBLIC_LOGS: "1" # public repo = public run logs
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22" # supabase-js needs Node 22+ (native WebSocket)
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install worker deps
+        run: npm install --no-audit --no-fund
+      - name: Send the digest
+        env:
+          MODE: digest
+          # TEST send from the manual "test" input OR any repository_dispatch
+          # (the dashboard button). client_payload.limit sets the reel count.
+          DIGEST_TEST: ${{ (inputs.test || github.event_name == 'repository_dispatch') && '1' || '' }}
+          DIGEST_TEST_LIMIT: ${{ github.event.client_payload.limit || '' }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # config.mjs validates these at import even in digest mode, so pass them.
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Extra free LLM providers for the synthesis brief — router fails over.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: npm start

@@ -1,0 +1,95 @@
+name: Reel backfill entities
+
+# One-off, manual: re-structure the existing reel backlog — entities, stocks,
+# the universal point, the honest verification read, and the rewritten summary
+# — by re-running the (upgraded) structuring prompt over each reel's STORED
+# transcript / segments / on-screen text — the videos are gone, so no
+# download/OCR happens here. Routes through the multi-provider router and
+# verifies every proposed entity link (dead ones dropped). Writes a row only
+# when the run actually produces something.
+#
+# Trigger from the Actions tab → "Reel backfill entities" → Run workflow.
+# Pass a single reel id to backfill just that one; leave it blank to sweep the
+# backlog (reels missing entities, stocks, or a universal point).
+on:
+  workflow_dispatch:
+    inputs:
+      id:
+        description: "One reel id to backfill (blank = sweep the backlog)"
+        type: string
+        default: ""
+      categories:
+        description: "Comma-separated category slugs to limit the sweep (e.g. ai,stocks). Blank = all."
+        type: string
+        default: ""
+      limit:
+        description: "Stop after this many reels (blank = as many as fit the time budget)"
+        type: string
+        default: ""
+      mode:
+        description: "Sweep scope (ignored when an id is given)"
+        type: choice
+        default: missing
+        options:
+          - missing   # reels missing entities, stocks, or a universal point (safe default)
+          - all       # re-run everything, even already-populated
+          - dry       # print what would change, write nothing
+
+concurrency:
+  group: reel-backfill-entities
+  cancel-in-progress: false
+
+env:
+  PUBLIC_LOGS: "1" # public repo = public run logs
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # A sweep does a CHUNK and exits 0. It used to run until this ceiling
+    # cancelled it — and a cancelled run is billed in full, reports nothing at
+    # the end, and loses whatever item was in flight. The script's own budget
+    # (--budget-min, below) is set BELOW this number so the run stops on our
+    # terms; this is now a backstop, not the mechanism.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22" # supabase-js needs Node 22+ (native WebSocket)
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install worker deps
+        run: npm install --no-audit --no-fund
+      - name: Backfill entities
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_LLM_MODEL: ${{ secrets.NVIDIA_LLM_MODEL }}
+        run: |
+          ID="${{ inputs.id }}"
+          CATS="${{ inputs.categories }}"
+          LIMIT="${{ inputs.limit }}"
+          CATFLAG=""
+          if [ -n "$CATS" ]; then CATFLAG="--cats=$CATS"; fi
+          # 40 minutes under a 45 minute timeout: room for one long item to
+          # finish after the budget is spent, and still exit cleanly.
+          BUDGET="--budget-min=40"
+          LIMITFLAG=""
+          if [ -n "$LIMIT" ]; then LIMITFLAG="--limit=$LIMIT"; fi
+          if [ -n "$ID" ]; then
+            node backfill-entities.mjs "$ID"
+          else
+            case "${{ inputs.mode }}" in
+              all) node backfill-entities.mjs --all $CATFLAG $LIMITFLAG $BUDGET ;;
+              dry) node backfill-entities.mjs --dry $CATFLAG $LIMITFLAG $BUDGET ;;
+              *)   node backfill-entities.mjs $CATFLAG $LIMITFLAG $BUDGET ;;
+            esac
+          fi

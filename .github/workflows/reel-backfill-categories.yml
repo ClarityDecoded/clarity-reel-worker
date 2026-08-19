@@ -1,0 +1,73 @@
+name: Reel backfill categories
+
+# One-off, manual: classify the existing reel backlog into categories via the
+# multi-provider router (so it fails over across Groq/NVIDIA/Gemini/Cerebras/
+# OpenRouter instead of dying on a single provider). Runs the cheap title/summary
+# classifier — the videos are long gone, so no download/OCR happens here.
+#
+# Trigger from the Actions tab → "Reel backfill categories" → Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Stop after this many reels (blank = as many as fit the time budget)"
+        type: string
+        default: ""
+      mode:
+        description: "Which reels to classify"
+        type: choice
+        default: uncategorised
+        options:
+          - uncategorised   # only reels with no category yet (safe default)
+          - all             # re-classify everything, even already-set
+          - dry             # print what would change, write nothing
+
+concurrency:
+  group: reel-backfill-categories
+  cancel-in-progress: false
+
+env:
+  PUBLIC_LOGS: "1" # public repo = public run logs
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # A sweep does a CHUNK and exits 0. It used to run until this ceiling
+    # cancelled it — and a cancelled run is billed in full, reports nothing at
+    # the end, and loses whatever item was in flight. The script's own budget
+    # (--budget-min, below) is set BELOW this number so the run stops on our
+    # terms; this is now a backstop, not the mechanism.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22" # supabase-js needs Node 22+ (native WebSocket)
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install worker deps
+        run: npm install --no-audit --no-fund
+      - name: Backfill categories
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_LLM_MODEL: ${{ secrets.NVIDIA_LLM_MODEL }}
+        run: |
+          LIMIT="${{ inputs.limit }}"
+          LIMITFLAG=""
+          if [ -n "$LIMIT" ]; then LIMITFLAG="--limit=$LIMIT"; fi
+          # 40 minutes under a 45 minute timeout — see the entities sweep.
+          BUDGET="--budget-min=40"
+          case "${{ inputs.mode }}" in
+            all) node backfill-categories.mjs --all $LIMITFLAG $BUDGET ;;
+            dry) node backfill-categories.mjs --dry $LIMITFLAG $BUDGET ;;
+            *)   node backfill-categories.mjs $LIMITFLAG $BUDGET ;;
+          esac

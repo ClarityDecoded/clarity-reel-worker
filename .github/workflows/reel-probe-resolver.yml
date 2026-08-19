@@ -1,0 +1,62 @@
+name: Reel probe resolver
+
+# Manual, read-only experiment: does a resolver tier work from a GitHub Actions
+# IP? Instagram rate-limits datacenter ranges, which is the entire reason the
+# paid RapidAPI resolver exists — this answers whether the free yt-dlp tier can
+# replace it, with data rather than speculation.
+#
+# Touches nothing: no Supabase, no queue, no emails. Safe to run any time.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Instagram reel URL to resolve"
+        type: string
+        required: true
+      url2:
+        description: "A SECOND, different reel URL (proves the provider isn't a mock)"
+        type: string
+        default: ""
+      order:
+        description: "Which tiers to try, in order"
+        type: choice
+        default: ytdlp
+        options:
+          - ytdlp
+          - rapidapi
+          - ytdlp,rapidapi
+
+env:
+  PUBLIC_LOGS: "1" # public repo = public run logs
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install worker deps
+        run: npm install --no-audit --no-fund
+      - name: Install yt-dlp
+        if: contains(github.event.inputs.order, 'ytdlp')
+        working-directory: .
+        run: |
+          sudo curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+            -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+      - name: Probe
+        env:
+          RESOLVER_ORDER: ${{ github.event.inputs.order }}
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+          RAPIDAPI_KEYS: ${{ secrets.RAPIDAPI_KEYS }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
+          RAPIDAPI_URL_TEMPLATE: ${{ secrets.RAPIDAPI_URL_TEMPLATE }}
+        run: node probe-resolver.mjs "${{ github.event.inputs.url }}" "${{ github.event.inputs.url2 }}"
