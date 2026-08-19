@@ -188,6 +188,24 @@ async function processItem(row, knownCategories = []) {
       console.warn("  auto-file skipped —", e?.message || e);
     }
 
+    // A workspace picked in the Shortcut's menu at dump time (patch_029).
+    // Additive to auto-file, not a replacement — a fitness reel manually sent
+    // to a different workspace ends up tagged to both.
+    if (row.workspace_id) {
+      try {
+        const { error } = await supabase
+          .from("reel_board_tags")
+          .upsert(
+            { reel_result_id: result.id, workspace_id: row.workspace_id },
+            { onConflict: "reel_result_id,workspace_id", ignoreDuplicates: true },
+          );
+        if (error) console.warn("  chosen-workspace tag failed —", error.message);
+        else filed.push("tagged → chosen workspace");
+      } catch (e) {
+        console.warn("  chosen-workspace tag skipped —", e?.message || e);
+      }
+    }
+
     await supabase
       .from("reel_queue")
       .update({ status: "done", processed_at: new Date().toISOString(), error: null })
