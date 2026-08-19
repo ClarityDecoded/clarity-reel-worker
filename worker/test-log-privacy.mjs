@@ -33,6 +33,19 @@ const clean = (name, out, ...banned) => {
   check("requeue line keeps the attempt count", out.includes("(attempt 2/3)"));
 }
 
+// The exact line that leaked from the first public run: the url was redacted and
+// the title sat next to it in the clear, because it is interpolated UNQUOTED.
+{
+  const out = redact('✓ <url> → education: AI Building Blocks');
+  clean("unquoted title after the category does not leak", out, "AI Building Blocks", "Building");
+  check("category survives", /education:/.test(out));
+}
+{
+  const out = redact('✓ <url> → recipe: "Miso Butter Salmon" [auto: trying, tagged → Rahul Panchal]');
+  clean("quoted title in the success line goes too", out, "Miso", "Salmon");
+  check("the auto-file diagnostic survives", /\[auto:/.test(out));
+}
+
 // --- the lines the backfills print --------------------------------------
 {
   const out = redact('✓ 8f2b… "How I made $35k a month with one funnel" → 3 entities, 2 verified link(s)');

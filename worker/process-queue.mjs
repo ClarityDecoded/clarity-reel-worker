@@ -211,7 +211,7 @@ async function processItem(row, knownCategories = []) {
       .update({ status: "done", processed_at: new Date().toISOString(), error: null })
       .eq("id", row.id);
 
-    console.log(`✓ ${row.url} → ${type}: ${title}${filed.length ? ` [auto: ${filed.join(", ")}]` : ""}`);
+    console.log(`✓ ${row.url} → ${type}: "${title}"${filed.length ? ` [auto: ${filed.join(", ")}]` : ""}`);
     return { ok: true, result };
   } catch (e) {
     // Resolver quota fully spent — not this item's fault. Put it back to 'queued'
