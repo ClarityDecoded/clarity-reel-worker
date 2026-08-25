@@ -30,6 +30,7 @@ function stub(rapid, ytdlp) {
 }
 function behave(kind) {
   if (kind === "ok") return { videoUrl: "https://cdn/v.mp4", caption: "c", thumbnail: "t", author: "a" };
+  if (kind === "carousel") return { videoUrl: null, imageUrls: ["https://cdn/1.jpg", "https://cdn/2.jpg"], caption: "c" };
   if (kind === "empty") return { videoUrl: null };
   if (kind === "exhausted") throw new AllResolversExhausted();
   if (kind === "private") throw new Error("PRIVATE_OR_UNAVAILABLE");
@@ -77,6 +78,14 @@ r = await attempt("nonsense", "ok", "ok");
 check("unknown name -> names no known resolver", /no known resolver/.test(r.err?.message || ""), r.err?.message);
 r = await attempt("ytdlp,rapidapi", "ok", "absent");
 check("yt-dlp missing -> rapidapi still serves", !!r.ok?.videoUrl, r.err?.message);
+
+console.log("--- carousel / photo posts (no video url) ---");
+r = await attempt("rapidapi", "carousel", "absent");
+check("a carousel post (imageUrls, no video) counts as resolved",
+  r.ok?.imageUrls?.length === 2 && !r.ok?.videoUrl, r.err?.message);
+r = await attempt("ytdlp,rapidapi", "empty", "carousel");
+check("a tier with only images still wins over one with neither",
+  r.ok?.imageUrls?.length === 2, r.err?.message);
 
 Object.assign(RESOLVER_TIERS, real);
 console.log(fails ? `\n${fails} FAILED` : "\nall passed");

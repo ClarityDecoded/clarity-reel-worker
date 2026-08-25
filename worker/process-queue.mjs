@@ -14,7 +14,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import { config } from "./config.mjs";
 import { resolveReel, resolverStatus, AllResolversExhausted } from "./resolve.mjs";
-import { downloadVideo, extractAudio, sampleTextFrames, capturePoster } from "./media.mjs";
+import { downloadVideo, downloadImage, extractAudio, sampleTextFrames, capturePoster } from "./media.mjs";
 import { transcribe, ocrTimeline, structure, synthesize, llmUsageSummary } from "./nvidia.mjs";
 import { normalizeCategory } from "./prompts.mjs";
 import { verifyEntities } from "./verify.mjs";
@@ -44,22 +44,20 @@ const friendlyError = (e) =>
 // we still have the video, archive a stable copy here and store THAT url.
 const THUMB_BUCKET = process.env.REEL_THUMB_BUCKET || "reel-thumbs";
 
-// Persist a permanent thumbnail: fetch the resolver's cover image bytes (or, if
-// that fails, grab a poster frame from the video we already downloaded), upload
-// to Storage, and return its public URL. Best-effort — on any failure we fall
-// back to the original (ephemeral) url so behaviour never regresses.
-async function persistThumbnail(row, thumbnail, videoPath, work) {
+// Persist a permanent thumbnail: fetch the resolver's cover image bytes (or,
+// if that fails, fall back to `getFallbackBytes` — a poster frame captured
+// from the video for a reel, or the first already-downloaded slide for an
+// image post), upload to Storage, and return its public URL. Best-effort —
+// on any failure we fall back to the original (ephemeral) url so behaviour
+// never regresses.
+async function persistThumbnail(row, thumbnail, getFallbackBytes) {
   try {
     let bytes = null;
     if (thumbnail) {
       const res = await fetch(thumbnail, { headers: { "user-agent": "Mozilla/5.0" } });
       if (res.ok) bytes = Buffer.from(await res.arrayBuffer());
     }
-    if (!bytes) {
-      const poster = path.join(work, "poster.jpg");
-      await capturePoster(videoPath, poster);
-      bytes = await readFile(poster);
-    }
+    if (!bytes && getFallbackBytes) bytes = await getFallbackBytes();
     const key = `${row.id}.jpg`;
     const { error } = await supabase.storage
       .from(THUMB_BUCKET)
@@ -91,46 +89,95 @@ async function processItem(row, knownCategories = []) {
 
   const work = await mkdtemp(path.join(tmpdir(), "reel-"));
   try {
-    // 1. resolve
-    const { videoUrl, caption, thumbnail } = await resolveReel(row.url);
+    // 1. resolve — a video post carries `videoUrl`; a photo/carousel post
+    // (no video track at all) carries `imageUrls` instead. Exactly one of the
+    // two is populated (resolve.mjs), so this is the fork between the two
+    // pipelines: a reel goes through ffmpeg + frame sampling, a carousel post
+    // is OCR'd directly, slide by slide, with no audio step at all.
+    const { videoUrl, imageUrls, caption, thumbnail } = await resolveReel(row.url);
+    const isImagePost = !videoUrl && imageUrls?.length > 0;
 
-    // 2. download
-    const videoPath = path.join(work, "video.mp4");
-    await downloadVideo(videoUrl, videoPath);
-
-    // 3. audio + frames. Frames now cover the WHOLE video: sampled at
-    //    config.ocr.fps, near-duplicates dropped locally by mpdecimate, each
-    //    survivor carrying its real timestamp.
-    // wavPath is null when the reel has no audio track (silent video) — the
-    // on-screen text and caption still carry it, so that's not a failure.
-    const wavPath = await extractAudio(videoPath, path.join(work, "audio.wav"));
-    const frames = await sampleTextFrames(videoPath, path.join(work, "frames"), config.ocr);
-    console.log(`  ${frames.length} distinct frame(s) to OCR` +
-      (frames.length ? ` (${frames[0].t.toFixed(1)}s to ${frames[frames.length - 1].t.toFixed(1)}s)` : ""));
-
-    // 4. transcript (best-effort) + on-screen text (best-effort)
     let transcript = "";
     let segments = [];
-    if (wavPath) {
-      try {
-        const asr = await transcribe(wavPath);
-        transcript = asr.text;
-        segments = asr.segments;
-      } catch (e) { console.warn("Transcription failed:", e.message); }
-    }
-
     let onScreen = [];
-    try { onScreen = await ocrTimeline(frames); }
-    catch (e) { console.warn("OCR failed:", e.message); }
+    let thumbUrl;
+
+    if (isImagePost) {
+      // Photo / carousel post: no video, no audio track to transcribe — every
+      // slide is OCR'd on its own. `t` is the slide's position (0, 1, 2…),
+      // not a real timestamp; ocrTimeline only needs it to keep entries in
+      // the post's own order, which is all "order" means for a carousel.
+      const imagePaths = [];
+      for (let i = 0; i < imageUrls.length; i++) {
+        const p = path.join(work, `slide-${i}.jpg`);
+        await downloadImage(imageUrls[i], p);
+        imagePaths.push({ path: p, t: i });
+      }
+      console.log(`  ${imagePaths.length} image(s) to OCR (carousel post)`);
+
+      try { onScreen = await ocrTimeline(imagePaths); }
+      catch (e) { console.warn("OCR failed:", e.message); }
+
+      if (!onScreen.length && !caption) {
+        throw new Error("No readable content (no on-screen text or caption).");
+      }
+
+      // Archive a permanent thumbnail (IG's expires) — fall back to the first
+      // slide we already downloaded rather than the resolver's cover image.
+      thumbUrl = await persistThumbnail(row, thumbnail, () => readFile(imagePaths[0].path));
+    } else {
+      // 2. download
+      const videoPath = path.join(work, "video.mp4");
+      await downloadVideo(videoUrl, videoPath);
+
+      // 3. audio + frames. Frames now cover the WHOLE video: sampled at
+      //    config.ocr.fps, near-duplicates dropped locally by mpdecimate, each
+      //    survivor carrying its real timestamp.
+      // wavPath is null when the reel has no audio track (silent video) — the
+      // on-screen text and caption still carry it, so that's not a failure.
+      const wavPath = await extractAudio(videoPath, path.join(work, "audio.wav"));
+      const frames = await sampleTextFrames(videoPath, path.join(work, "frames"), config.ocr);
+      console.log(`  ${frames.length} distinct frame(s) to OCR` +
+        (frames.length ? ` (${frames[0].t.toFixed(1)}s to ${frames[frames.length - 1].t.toFixed(1)}s)` : ""));
+
+      // 4. transcript (best-effort) + on-screen text (best-effort)
+      if (wavPath) {
+        try {
+          const asr = await transcribe(wavPath);
+          transcript = asr.text;
+          segments = asr.segments;
+        } catch (e) { console.warn("Transcription failed:", e.message); }
+      }
+
+      try { onScreen = await ocrTimeline(frames); }
+      catch (e) { console.warn("OCR failed:", e.message); }
+
+      if (!transcript && !onScreen.length && !caption) {
+        throw new Error("No readable content (no speech, on-screen text, or caption).");
+      }
+
+      // 6. archive a permanent thumbnail (IG's expires) while we still have the video
+      thumbUrl = await persistThumbnail(row, thumbnail, async () => {
+        const poster = path.join(work, "poster.jpg");
+        await capturePoster(videoPath, poster);
+        return readFile(poster);
+      });
+    }
 
     const onScreenText = onScreen.map((o) => o.text).join("\n");
 
-    if (!transcript && !onScreenText && !caption) {
-      throw new Error("No readable content (no speech, on-screen text, or caption).");
-    }
-
-    // 5. classify + structure, from one interleaved timeline
-    const out = await structure({ transcript, caption, onScreenText, segments, onScreen, knownCategories });
+    // 5. classify + structure. A carousel post's `t` is slide order, not a
+    // real second count — feeding it to buildTimeline would print misleading
+    // "[00:01] [ON SCREEN]" stamps that read like a fast-cut video. Passing
+    // an empty `onScreen` here (while `onScreenText` still carries every
+    // slide's real text, already joined in the post's own order) makes
+    // buildUserContent take its flat TRANSCRIPT/ON-SCREEN-TEXT fallback
+    // instead of building a false timeline.
+    const out = await structure({
+      transcript, caption, onScreenText, knownCategories,
+      segments: isImagePost ? [] : segments,
+      onScreen: isImagePost ? [] : onScreen,
+    });
     const type = out.content_type || "other";
     const category = normalizeCategory(out.category, type);   // library bucket, or null
     const sub = (type === "recipe" ? out.recipe : out.synopsis) || out.recipe || out.synopsis || {};
@@ -145,9 +192,6 @@ async function processItem(row, knownCategories = []) {
       const after = sub.entities.reduce((n, e) => n + (e.links?.length || 0), 0);
       console.log(`  entities: ${sub.entities.length}, links ${before} proposed → ${after} verified`);
     }
-
-    // 6. archive a permanent thumbnail (IG's expires) while we still have the video
-    const thumbUrl = await persistThumbnail(row, thumbnail, videoPath, work);
 
     // 7. persist result + mark queue done
     const record = {

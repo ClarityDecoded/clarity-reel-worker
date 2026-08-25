@@ -1,7 +1,13 @@
-// Resolver: Instagram reel URL -> { videoUrl, caption, thumbnail, author }.
+// Resolver: Instagram post URL -> { videoUrl, imageUrls, caption, thumbnail,
+// author }. A reel/video post carries `videoUrl`; a photo or multi-image
+// carousel post (a `/p/...` link with no video track) carries `imageUrls`
+// instead — exactly one of the two is populated, never both, since a single
+// IG post is one or the other. Downstream (process-queue.mjs) branches on
+// which one came back: video runs through ffmpeg + frame OCR as before,
+// images are OCR'd directly, no audio/frame-sampling step involved.
 //
 // We don't scrape Instagram ourselves (datacenter IPs get blocked); a RapidAPI
-// downloader returns a direct CDN URL. This is the ONLY platform-specific module
+// downloader returns direct CDN URLs. This is the ONLY platform-specific module
 // — adding TikTok / YT Shorts later is a sibling resolver, nothing downstream
 // changes. normalize() handles a few common response shapes (incl. a capitalized
 // Media[] array of {Type, Url}); extend the lists if you swap providers.
@@ -30,6 +36,7 @@ export class AllResolversExhausted extends Error {
 }
 
 const MP4_RE = /^https?:\/\/[^\s"']+\.mp4(\?|$)/i;
+const IMG_RE = /^https?:\/\/[^\s"']+\.(?:jpg|jpeg|png|webp)(\?|$)/i;
 
 // Share Sheet links arrive in several shapes: instagram.com vs www.instagram.com,
 // /reel/ vs /reels/ vs /p/, and usually a "?igsh=…" tracking param. Downstream
@@ -96,19 +103,53 @@ function ciGet(obj, names) {
 }
 
 // Providers that return a Media array of { type, url, thumbnail } (e.g. Image + Video).
+// A carousel/photo post's array holds MULTIPLE image entries (one per slide),
+// so every image-typed item is collected, not just the first — the whole
+// point of "extract all the text from the post".
 function fromMediaArray(data) {
   const media = data?.Media || data?.media || data?.medias;
   if (!Array.isArray(media)) return {};
   const byType = (t) => media.find((m) => String(m?.Type || m?.type || "").toLowerCase() === t);
   const vid = byType("video");
-  const img = byType("image");
+  const imgs = media.filter((m) => {
+    const t = String(m?.Type || m?.type || "").toLowerCase();
+    return t === "image" || t === "photo" || t === "carousel_media";
+  });
   const videoUrl = vid ? (vid.Url || vid.url || null) : null;
-  // Prefer the video item's own thumbnail; fall back to an image item's url.
+  const imageUrls = imgs
+    .map((m) => m.Url || m.url || m.image_url || m.imageUrl || m.display_url)
+    .filter((u) => typeof u === "string" && u.trim());
+  // Prefer the video item's own thumbnail; fall back to the first image.
   const thumbnail =
     (vid && (vid.thumbnail || vid.Thumbnail)) ||
-    (img && (img.Url || img.url)) ||
+    imageUrls[0] ||
     null;
-  return { videoUrl, thumbnail };
+  return { videoUrl, imageUrls, thumbnail };
+}
+
+// Carousel image urls under common container keys other than Media[] (a
+// provider that separates video-post and photo-post response shapes rather
+// than using one typed array). Only known container names are scanned —
+// deliberately not a generic recursive image scrape, which would just as
+// happily pick up an unrelated avatar or icon url buried in the response.
+function findImageUrls(data) {
+  const containers = [
+    data?.images, data?.image_urls, data?.carousel_media, data?.sidecar,
+    data?.slides, data?.data?.carousel_media, data?.result?.carousel_media,
+    data?.data?.images, data?.result?.images,
+  ];
+  const urls = [];
+  const seen = new Set();
+  for (const c of containers) {
+    if (!Array.isArray(c)) continue;
+    for (const item of c) {
+      const u = typeof item === "string"
+        ? item
+        : (item?.url || item?.Url || item?.image_url || item?.imageUrl || item?.display_url);
+      if (typeof u === "string" && IMG_RE.test(u) && !seen.has(u)) { seen.add(u); urls.push(u); }
+    }
+  }
+  return urls;
 }
 
 // Recursively find the first URL that looks like a video CDN link.
@@ -174,6 +215,10 @@ function normalize(data) {
     media.videoUrl ||
     firstString(data, ["video_url", "videoUrl", "data.video_url", "media.video_url", "result.video", "links.mp4"]) ||
     findVideoUrl(data);
+  // A post is a video OR a photo/carousel, never both — only look for images
+  // when no video turned up, so a reel's own thumbnail/cover art (which also
+  // matches IMG_RE) never gets misread as carousel slides.
+  const imageUrls = videoUrl ? [] : (media.imageUrls?.length ? media.imageUrls : findImageUrls(data));
   // Known shapes first (cheap and exact), then a deep search so an unknown
   // nesting can't silently drop the post's written content. The deep result
   // also wins when it is materially longer — providers commonly expose a
@@ -190,12 +235,13 @@ function normalize(data) {
   const thumbnail =
     media.thumbnail ||
     firstString(data, ["thumbnail", "thumbnail_url", "thumb", "cover", "image", "display_url"]) ||
+    imageUrls[0] ||
     null;
   const author =
     ciGet(data, ["author", "username"]) ||
     firstString(data, ["owner.username", "user.username"]) ||
     null;
-  return { videoUrl, caption, thumbnail, author };
+  return { videoUrl, imageUrls, caption, thumbnail, author };
 }
 
 // Exposed for test-caption.mjs — the normalizer is the part worth unit testing
@@ -244,7 +290,7 @@ export async function resolveViaRapidApi(url) {
 
     const data = await res.json();
     const out = normalize(data);
-    if (!out.videoUrl) throw new Error("PRIVATE_OR_UNAVAILABLE");
+    if (!out.videoUrl && !out.imageUrls.length) throw new Error("PRIVATE_OR_UNAVAILABLE");
     return out;
   }
 
@@ -254,8 +300,9 @@ export async function resolveViaRapidApi(url) {
 // ── provider tiers ──────────────────────────────────────────────────────────
 //
 // resolveReel walks RESOLVER_ORDER (default "rapidapi", i.e. exactly the old
-// behaviour) and returns the first provider that yields a video url. A tier
-// that fails — for any reason — falls through to the next.
+// behaviour) and returns the first provider that yields a video url OR a set
+// of carousel image urls. A tier that fails — for any reason — falls through
+// to the next.
 //
 // The three failure signals downstream depends on are preserved carefully,
 // because process-queue and isTransient key off them (gotchas #25/#26):
@@ -302,14 +349,14 @@ export async function resolveReel(url) {
     configured = true;
     try {
       const out = await tier.resolve(url);
-      if (out?.videoUrl) {
+      if (out?.videoUrl || out?.imageUrls?.length) {
         if (name !== order[0]) console.log(`  resolver: fell back to ${name}`);
         return out;
       }
-      // No url is the same class of answer as "private" — the provider looked
-      // and found nothing playable.
+      // Nothing playable AND no images is the same class of answer as
+      // "private" — the provider looked and found nothing.
       sawPrivate = true;
-      notes.push(`${name}: no video url`);
+      notes.push(`${name}: no video url or images`);
     } catch (e) {
       if (e instanceof AllResolversExhausted || e?.code === "ALL_RESOLVERS_EXHAUSTED") {
         exhausted = e;

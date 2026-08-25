@@ -29,8 +29,10 @@ function run(args) {
 
 // IG CDN links are signed and flaky — a dropped connection surfaces as a bare
 // undici "fetch failed". Retry transport blips and 5xx; a 4xx means the signed
-// link is dead, so don't waste retries on it.
-export async function downloadVideo(url, destPath) {
+// link is dead, so don't waste retries on it. This is a plain byte-for-byte
+// download and isn't actually video-specific — downloadImage below is the
+// same function under a name that matches what it's fetching.
+async function downloadFile(url, destPath) {
   return withRetry(
     async () => {
       const res = await fetch(url, {
@@ -50,6 +52,12 @@ export async function downloadVideo(url, destPath) {
     },
   );
 }
+
+export const downloadVideo = downloadFile;
+// Same CDN, same signed-link behaviour, same retry policy — a carousel
+// post's slide is fetched with exactly this. Named separately so the call
+// site in process-queue.mjs reads honestly.
+export const downloadImage = downloadFile;
 
 // Mono 16kHz WAV is the sweet spot for ASR models.
 //

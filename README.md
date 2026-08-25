@@ -1,9 +1,12 @@
 # Reel worker
 
-Turns an Instagram reel link into a structured, searchable result: resolve →
-download → ffmpeg → speech-to-text → on-screen-text OCR → one structuring pass
-→ a recipe or a synopsis. Runs on GitHub Actions on a schedule and emails a
-single digest each morning.
+Turns an Instagram post link into a structured, searchable result. A reel
+(video) goes resolve → download → ffmpeg → speech-to-text → on-screen-text OCR
+→ one structuring pass → a recipe or a synopsis. A photo or carousel post
+(no video track) skips download/ffmpeg/ASR entirely — every slide is OCR'd
+directly, then joins the same caption + structuring pass, so all of a post's
+written text (caption + every slide) is extracted either way. Runs on
+GitHub Actions on a schedule and emails a single digest each morning.
 
 It is the background half of a private app; this repo holds only the worker.
 There is no data here — every run reads and writes a Supabase project the repo
