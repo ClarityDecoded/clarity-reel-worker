@@ -193,6 +193,13 @@ async function processItem(row, knownCategories = []) {
       console.log(`  entities: ${sub.entities.length}, links ${before} proposed → ${after} verified`);
     }
 
+    // media_type records the FORMAT the post actually was (reel/carousel/post),
+    // separate from content_type (which is topical — recipe/howto/etc). Without
+    // it there was no way to tell a video reel from a carousel after the fact,
+    // so the library couldn't filter by format even though the pipeline above
+    // already fully processes both.
+    const mediaType = !isImagePost ? "reel" : imageUrls.length > 1 ? "carousel" : "post";
+
     // 7. persist result + mark queue done
     const record = {
       queue_id: row.id,
@@ -207,18 +214,26 @@ async function processItem(row, knownCategories = []) {
       on_screen_text: onScreen,
       caption,
       thumbnail_url: thumbUrl,
+      media_type: mediaType,
     };
-    let { data: result, error: insErr } = await supabase
-      .from("reel_results").insert(record).select().single();
-    // patch_019 adds `caption`. If the worker ships before the patch is applied,
-    // PostgREST rejects the WHOLE insert over the unknown column — which would
-    // fail a reel for a field that is only nice to have. Retry without it rather
-    // than lose the item (same defensive rule as the reel list query).
-    if (insErr && /caption/i.test(insErr.message)) {
-      console.warn("  caption column missing (run patch_019); saving without it");
-      const { caption: _omit, ...noCaption } = record;
+    // patch_019 adds `caption`, patch_037 adds `media_type`. If the worker ships
+    // before a patch is applied, PostgREST rejects the WHOLE insert over the
+    // one unknown column — which would fail a reel for a field that's only
+    // nice to have. Drop whichever column it names and retry, rather than lose
+    // the item (same defensive rule as the reel list query).
+    let attemptRecord = record;
+    let result, insErr;
+    for (let i = 0; i < 3; i++) {
       ({ data: result, error: insErr } = await supabase
-        .from("reel_results").insert(noCaption).select().single());
+        .from("reel_results").insert(attemptRecord).select().single());
+      if (!insErr) break;
+      const missing = insErr.message.match(/column "?(\w+)"? of relation/i)?.[1]
+        || (/caption/i.test(insErr.message) && "caption")
+        || (/media_type/i.test(insErr.message) && "media_type");
+      if (!missing || !(missing in attemptRecord)) break;
+      console.warn(`  ${missing} column missing (run the matching patch); saving without it`);
+      const { [missing]: _omit, ...rest } = attemptRecord;
+      attemptRecord = rest;
     }
     if (insErr) throw new Error("DB insert failed: " + insErr.message);
 
