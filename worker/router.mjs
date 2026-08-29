@@ -149,8 +149,29 @@ export async function route({ task, capability = "text", messages, json = false,
     throw new Error(`No provider available for ${capability} (task=${task}). Set at least one provider key.`);
   }
 
+  // A cooling provider is sorted to the back (orderFor), but the loop below
+  // used to still call it — cooldown was decorative, not enforced. When it's
+  // the LAST capable candidate (the common shape once others are marked dead
+  // this run, gotcha #57/#85) that meant every call still paid the provider's
+  // full retry budget against something we already know just failed. Skip a
+  // cooling candidate outright UNLESS every candidate is cooling/dead, in
+  // which case fail fast rather than hammer one anyway — this is what let a
+  // single stalled OCR frame (Gemini's daily quota exhausted, NVIDIA+
+  // OpenRouter already dead) cost ~90s each and burn a whole 1-hour run
+  // without finishing its first item.
+  const ready = candidates.filter((p) => stat(p.name).coolUntil <= now);
+  if (ready.length === 0) {
+    const soonest = candidates.reduce((a, b) => (stat(a.name).coolUntil < stat(b.name).coolUntil ? a : b));
+    const err = new Error(
+      `All providers cooling for ${capability} (task=${task}) — soonest back is ${soonest.name} in ` +
+      `${Math.max(0, stat(soonest.name).coolUntil - now)}ms`,
+    );
+    err.status = 503; // temporary, not permanent — isTransient (retry.mjs) must re-queue, not bury, the item
+    throw err;
+  }
+
   let lastErr;
-  for (const p of candidates) {
+  for (const p of ready) {
     const s = stat(p.name);
     try {
       const content = await withRetry(
