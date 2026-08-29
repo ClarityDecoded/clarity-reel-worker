@@ -68,7 +68,7 @@ function isRateLimited(err) {
 // then failed over to NVIDIA) and was most of why that run hit the 30-minute
 // workflow timeout. So this is a PERMANENT per-run disable, not a cooldown.
 function isModelUnavailable(err) {
-  if (err?.status === 404) return true;
+  if (err?.status === 404 || err?.status === 410) return true;
   return /model[^.]{0,20}(not found|no longer available|does not exist|decommissioned|deprecated)|no longer available to new users/i
     .test(String(err?.message || ""));
 }

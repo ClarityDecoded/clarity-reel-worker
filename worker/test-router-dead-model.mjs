@@ -50,5 +50,30 @@ const geminiTotal = calls.filter((h) => h.includes("googleapis")).length;
 check("gemini never tried again after its model 404'd", geminiTotal === 1, geminiTotal);
 check("all 5 calls served", calls.filter((h) => !h.includes("googleapis")).length === 5, calls.length);
 
+// A 410 (retired model, e.g. NVIDIA pulling nemotron-nano-vl) is a permanent
+// per-run kill too, not just 404 — this is the exact shape that stalled
+// reel-process for days: NVIDIA 410'd on every OCR frame and was retried
+// every time anyway, burning the run into the 1-hour timeout.
+delete process.env.GEMINI_API_KEY; // isolate to nvidia so the mock can't be masked by gemini succeeding first
+process.env.OPENROUTER_API_KEY = "test-openrouter"; // second vision candidate so failover has somewhere to land
+const calls2 = [];
+globalThis.fetch = async (url, opts) => {
+  const host = new URL(url).host;
+  calls2.push(host);
+  if (host.includes("integrate.api.nvidia.com")) {
+    return new Response(JSON.stringify({ error: { message: "model retired" } }), { status: 410 });
+  }
+  return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
+};
+const { route: route2 } = await import(`./router.mjs?cachebust=${Date.now()}`);
+const ask2 = () =>
+  route2({ task: "ocr", capability: "vision", messages: [{ role: "user", content: "hi" }], retries: 0 });
+await ask2();
+const nvidiaFirst = calls2.filter((h) => h.includes("nvidia")).length;
+check("nvidia was tried exactly once after 410", nvidiaFirst === 1, nvidiaFirst);
+for (let i = 0; i < 4; i++) await ask2();
+const nvidiaTotal = calls2.filter((h) => h.includes("nvidia")).length;
+check("nvidia never tried again after its model 410'd", nvidiaTotal === 1, nvidiaTotal);
+
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);
