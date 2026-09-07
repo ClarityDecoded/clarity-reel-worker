@@ -22,6 +22,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { config } from "./config.mjs";
 import { structure } from "./nvidia.mjs";
+import { selectResult } from "./prompts.mjs";
 import { verifyEntities } from "./verify.mjs";
 import { runBudget } from "./run-budget.mjs";
 import { installPrivateLogging } from "./log-privacy.mjs";
@@ -55,6 +56,12 @@ async function backfillRow(r) {
   // (the video and the resolver response are long gone).
   const caption = r.caption || "";
 
+  // A stored title we would be happy to REPLACE. Only these — a real title is
+  // never overwritten, because this pass re-runs the model and a second opinion
+  // is not a reason to rename something the owner may already recognise.
+  const titleIsMissing = !String(r.title || "").trim()
+    || /^(untitled|unknown|n\/a|none)$/i.test(String(r.title).trim());
+
   if (!r.transcript && !onScreenText && !caption) {
     console.log(`- ${r.id}  skipped (no stored transcript, on-screen text or caption to work from)`);
     return { changed: false };
@@ -67,13 +74,34 @@ async function backfillRow(r) {
     segments,
     onScreen,
   });
-  const sub = out.synopsis || out.recipe || {};
+  // Same reader production uses, so a re-run can never interpret a result
+  // differently from the original pass (see selectResult).
+  const { type: newType, sub, summary: newSummary } = selectResult(out);
 
   const stocks = (sub.stocks || []).filter((s) => s?.ticker);
   // Write when the re-run produced ANY of the upgraded fields. universal_point
   // and the rewritten summary are the common case — most reels name nothing
   // lookup-able, and gating on entities/stocks alone would skip them all.
-  if (!sub.entities?.length && !stocks.length && !sub.universal_point && !sub.summary) {
+  const recoveredTitle = titleIsMissing && typeof sub.title === "string" && sub.title.trim()
+    ? sub.title.trim()
+    : null;
+
+  // An existing title is the owner's — the manage modal writes it, and a re-run
+  // is not a reason to rename something he may already recognise. But letting
+  // structured_json.title say something DIFFERENT is worse than either: the row
+  // and the body then disagree about what the reel is ("Coffee Porn" in the
+  // library, "Mercato Caffe Grand Opening" inside it). Keep them equal.
+  if (!titleIsMissing) sub.title = r.title;
+
+  // The reel's TYPE can change on a re-run — a reel whose caption was missing
+  // can now be plainly a recipe. content_type is what tells the renderer which
+  // shape structured_json holds (gotcha #53), so writing the new body without
+  // the new type leaves the two contradicting each other.
+  const typeChanged = newType && newType !== r.content_type;
+
+  // A recovered title counts as a result on its own: without this, a reel whose
+  // only gain is finally having a name is reported as "nothing extracted".
+  if (!sub.entities?.length && !stocks.length && !sub.universal_point && !newSummary && !recoveredTitle) {
     console.log(`- ${r.id}  "${r.title}"  → nothing extracted, left as-is`);
     return { changed: false };
   }
@@ -85,6 +113,14 @@ async function backfillRow(r) {
 
   sub.entities = await verifyEntities(sub.entities);
   const links = sub.entities.reduce((n, e) => n + (e.links?.length || 0), 0);
+  if (titleIsMissing && !recoveredTitle) {
+    // Say so out loud. A reel with nothing to work from (a transcript that is
+    // just "Outro Music") SHOULD stay Untitled — inventing a name for it is
+    // exactly the never-invent rule this pipeline is built on.
+    console.log(`   (still no title — nothing in the stored tracks names this reel)`);
+  }
+  if (recoveredTitle) console.log(`   title: "${r.title}" → "${recoveredTitle}"`);
+  if (typeChanged) console.log(`   type: ${r.content_type} → ${newType}  (re-run backfill-categories after this)`);
   console.log(`✓ ${r.id}  "${r.title}"  → ${sub.entities.length} entities, ${links} verified link(s)${stocks.length ? `, ${stocks.length} stock(s): ${stocks.map((s) => s.ticker).join(", ")}` : ""}${sub.universal_point ? `\n   universal point: ${sub.universal_point}` : ""}`);
 
   if (dry) {
@@ -106,9 +142,15 @@ async function backfillRow(r) {
   // even if this run phrased them slightly differently — we only add/replace the
   // new fields the upgrade introduced.
   const merged = { ...(r.structured_json || {}), ...sub };
+  // newSummary already covers a recipe's `description`; without that the old
+  // synopsis summary survived onto a reel that had become a recipe.
+  const fields = { structured_json: merged, summary: newSummary || r.summary };
+  if (typeChanged) fields.content_type = newType;
+  // Only ever FILL a missing title, never replace a real one.
+  if (recoveredTitle) fields.title = recoveredTitle;
   const { error } = await supabase
     .from("reel_results")
-    .update({ structured_json: merged, summary: sub.summary || r.summary })
+    .update(fields)
     .eq("id", r.id);
   if (error) throw new Error(`update ${r.id} failed: ${error.message}`);
   return { changed: true };

@@ -55,39 +55,5 @@ eq(normalize({ video_url: "https://x/v.mp4" }).caption, "", "no caption present"
 eq(normalize({ Media: [{ Type: "video", Url: "https://cdn/v.mp4" }], caption: LONG }).videoUrl,
   "https://cdn/v.mp4", "video url still extracted from Media array");
 
-// 9. carousel post — a Media array of several image entries, no video at all.
-// Every slide must come back, in order, so all of a carousel's text is read.
-function arrEq(actual, expected, label) {
-  const ok = Array.isArray(actual) && actual.length === expected.length &&
-    actual.every((v, i) => v === expected[i]);
-  if (!ok) failed++;
-  console.log(`${ok ? "✅" : "❌"} ${label}`);
-  if (!ok) console.log(`   expected: ${JSON.stringify(expected)}\n   actual:   ${JSON.stringify(actual)}`);
-}
-const carousel = normalize({
-  Media: [
-    { Type: "image", Url: "https://cdn/slide1.jpg" },
-    { Type: "image", Url: "https://cdn/slide2.jpg" },
-    { Type: "image", Url: "https://cdn/slide3.jpg" },
-  ],
-  caption: LONG,
-});
-eq(carousel.videoUrl, null, "carousel post has no video url");
-arrEq(carousel.imageUrls, ["https://cdn/slide1.jpg", "https://cdn/slide2.jpg", "https://cdn/slide3.jpg"],
-  "carousel post — every slide's image url extracted, in order");
-eq(carousel.caption, LONG, "carousel post caption still extracted");
-
-// 10. a video post's own cover/thumbnail must NOT be misread as carousel slides.
-const video = normalize({ Media: [{ Type: "video", Url: "https://cdn/v.mp4", thumbnail: "https://cdn/cover.jpg" }] });
-arrEq(video.imageUrls, [], "video post never carries imageUrls, even with a jpg thumbnail");
-
-// 11. a known carousel container key outside the Media[] shape.
-arrEq(normalize({ carousel_media: [{ url: "https://cdn/a.jpg" }, { url: "https://cdn/b.png" }] }).imageUrls,
-  ["https://cdn/a.jpg", "https://cdn/b.png"], "carousel_media container key");
-
-// 12. single photo post (not a reel) — one image, no video, resolvable at all.
-eq(normalize({ Media: [{ Type: "image", Url: "https://cdn/only.webp" }] }).imageUrls.length > 0, true,
-  "single-photo post resolves via imageUrls");
-
 console.log(failed ? `\n${failed} test(s) failed.` : "\nAll caption tests passed.");
 process.exit(failed ? 1 : 0);

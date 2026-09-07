@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Reel worker: Instagram links -> transcript + recipe/synopsis. MODE=process drains the queue as reels are dumped; MODE=digest sends one 4am email. Runs on GitHub Actions, isolated from the Vite app.",
   "scripts": {
-    "start": "node process-queue.mjs"
+    "start": "node process-queue.mjs",
+    "lab": "node --env-file=.env lab/server.mjs",
+    "test": "node run-tests.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.6",

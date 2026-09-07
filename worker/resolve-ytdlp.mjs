@@ -44,6 +44,26 @@ export async function ytDlpAvailable() {
 // Pick a single URL that has BOTH video and audio. process-queue downloads this
 // one file and extracts audio from it, so a video-only DASH stream would give a
 // silent reel and an empty transcript.
+// A CAROUSEL (Instagram calls it a carousel; yt-dlp reports _type: "playlist")
+// is a post of several images, not a video. There is no stream to download and
+// nothing to transcribe — the content is entirely the pictures and the caption.
+//
+// Each entry carries a full-resolution still (1080x1350 on the ones checked,
+// BETTER than the 720px we downscale video frames to), so the slides can be
+// read directly. Returns [] for anything that is not a carousel.
+//
+// A slide that is itself a VIDEO contributes its poster frame here rather than
+// its footage. That is a deliberate first cut: it captures the slide's on-screen
+// text, which is the point, without dragging a per-slide download and transcode
+// into what is otherwise a handful of image fetches.
+function pickSlides(info) {
+  if (info?._type !== "playlist") return [];
+  const entries = Array.isArray(info.entries) ? info.entries : [];
+  return entries
+    .map((e) => e?.thumbnail || e?.thumbnails?.at?.(-1)?.url || null)
+    .filter(Boolean);
+}
+
 function pickVideoUrl(info) {
   const direct = info?.requested_downloads?.[0]?.url || info?.url;
   if (direct) return direct;
@@ -81,6 +101,16 @@ export async function resolveViaYtDlp(rawUrl) {
     "--no-playlist",
     "--no-warnings",
     "--no-progress",
+    // Without this, yt-dlp ABORTS the whole extraction with "No video formats
+    // found!" and we lose the metadata along with it — even though the caption,
+    // title and thumbnail were all sitting right there. It fires on Instagram
+    // CAROUSEL posts (yt-dlp reports them as _type: playlist), which is a large
+    // slice of the library: 8 of a 12-reel sample failed this way, and every one
+    // of them handed over a full caption the moment this flag was added.
+    // Safe for the video path too — pickVideoUrl still returns null when there
+    // genuinely is no stream, and resolveReel already treats a null videoUrl as
+    // "this tier did not resolve", so nothing starts believing it has a video.
+    "--ignore-no-formats-error",
     "--socket-timeout", "20",
   ];
 
@@ -110,8 +140,10 @@ export async function resolveViaYtDlp(rawUrl) {
 
     const info = JSON.parse(stdout);
     const videoUrl = pickVideoUrl(info);
+    const slides = pickSlides(info);
     return {
       videoUrl: videoUrl || null,
+      slides,
       caption: info?.description || "",
       thumbnail: info?.thumbnail || info?.thumbnails?.at?.(-1)?.url || null,
       author: info?.uploader || info?.uploader_id || info?.channel || null,
@@ -120,3 +152,6 @@ export async function resolveViaYtDlp(rawUrl) {
     if (cookieDir) await rm(cookieDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+
+// Exported for test-carousel.mjs — slide selection is pure and worth pinning.
+export const __testables = { pickSlides, pickVideoUrl };

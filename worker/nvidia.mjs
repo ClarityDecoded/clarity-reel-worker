@@ -14,7 +14,7 @@ import {
   CATEGORY_PROMPT, buildCategoryContent, normalizeCategory, existingCategoriesNote,
 } from "./prompts.mjs";
 import { fileToBase64, tileFrames } from "./media.mjs";
-import { route } from "./router.mjs";
+import { route, parseLooseJson } from "./router.mjs";
 import { withRetry } from "./retry.mjs";
 
 const asr = config.transcription;
@@ -263,16 +263,10 @@ export async function ocrFrames(framePaths) {
 }
 
 // ── LLM: classify + structure ─────────────────────────────────────────────
-function parseJson(raw) {
-  let text = raw.trim();
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) text = fence[1].trim();
-  if (!text.startsWith("{")) {
-    const brace = text.indexOf("{");
-    if (brace >= 0) text = text.slice(brace, text.lastIndexOf("}") + 1);
-  }
-  return JSON.parse(text);
-}
+// The lenient reader lives in router.mjs so the router can VALIDATE a json:true
+// answer with the very same rules the caller will parse it with — otherwise the
+// router can bless a response the caller then chokes on.
+const parseJson = parseLooseJson;
 
 // NOTE: `segments` and `onScreen` MUST be forwarded to buildUserContent. They
 // are what buildTimeline interleaves into the single timed [mm:ss] [SPOKEN] /

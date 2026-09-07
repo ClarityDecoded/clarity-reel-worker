@@ -14,9 +14,9 @@ import { createClient } from "@supabase/supabase-js";
 
 import { config } from "./config.mjs";
 import { resolveReel, resolverStatus, AllResolversExhausted } from "./resolve.mjs";
-import { downloadVideo, downloadImage, extractAudio, sampleTextFrames, capturePoster } from "./media.mjs";
+import { downloadVideo, extractAudio, sampleTextFrames, capturePoster, downloadSlides } from "./media.mjs";
 import { transcribe, ocrTimeline, structure, synthesize, llmUsageSummary } from "./nvidia.mjs";
-import { normalizeCategory } from "./prompts.mjs";
+import { normalizeCategory, selectResult } from "./prompts.mjs";
 import { verifyEntities } from "./verify.mjs";
 import { autoFile } from "./autofile.mjs";
 import { sendDigest, sendResolverAlert } from "./email.mjs";
@@ -44,20 +44,30 @@ const friendlyError = (e) =>
 // we still have the video, archive a stable copy here and store THAT url.
 const THUMB_BUCKET = process.env.REEL_THUMB_BUCKET || "reel-thumbs";
 
-// Persist a permanent thumbnail: fetch the resolver's cover image bytes (or,
-// if that fails, fall back to `getFallbackBytes` — a poster frame captured
-// from the video for a reel, or the first already-downloaded slide for an
-// image post), upload to Storage, and return its public URL. Best-effort —
-// on any failure we fall back to the original (ephemeral) url so behaviour
-// never regresses.
-async function persistThumbnail(row, thumbnail, getFallbackBytes) {
+// Persist a permanent thumbnail: fetch the resolver's cover image bytes (or, if
+// that fails, grab a poster frame from the video we already downloaded), upload
+// to Storage, and return its public URL. Best-effort — on any failure we fall
+// back to the original (ephemeral) url so behaviour never regresses.
+// `fallbackImage` is a local file to use when the source thumbnail cannot be
+// fetched. For a video that is a poster frame grabbed with ffmpeg; for a
+// CAROUSEL there is no video to grab from, so the first slide — already
+// downloaded, and the image a reader sees first — stands in.
+async function persistThumbnail(row, thumbnail, videoPath, work, fallbackImage = null) {
   try {
     let bytes = null;
     if (thumbnail) {
       const res = await fetch(thumbnail, { headers: { "user-agent": "Mozilla/5.0" } });
       if (res.ok) bytes = Buffer.from(await res.arrayBuffer());
     }
-    if (!bytes && getFallbackBytes) bytes = await getFallbackBytes();
+    if (!bytes && fallbackImage) {
+      bytes = await readFile(fallbackImage);
+    }
+    if (!bytes && videoPath) {
+      const poster = path.join(work, "poster.jpg");
+      await capturePoster(videoPath, poster);
+      bytes = await readFile(poster);
+    }
+    if (!bytes) throw new Error("no thumbnail source available");
     const key = `${row.id}.jpg`;
     const { error } = await supabase.storage
       .from(THUMB_BUCKET)
@@ -89,45 +99,26 @@ async function processItem(row, knownCategories = []) {
 
   const work = await mkdtemp(path.join(tmpdir(), "reel-"));
   try {
-    // 1. resolve — a video post carries `videoUrl`; a photo/carousel post
-    // (no video track at all) carries `imageUrls` instead. Exactly one of the
-    // two is populated (resolve.mjs), so this is the fork between the two
-    // pipelines: a reel goes through ffmpeg + frame sampling, a carousel post
-    // is OCR'd directly, slide by slide, with no audio step at all.
-    const { videoUrl, imageUrls, caption, thumbnail } = await resolveReel(row.url);
-    const isImagePost = !videoUrl && imageUrls?.length > 0;
+    // 1. resolve
+    const { videoUrl, slides, caption, thumbnail } = await resolveReel(row.url);
 
-    let transcript = "";
-    let segments = [];
-    let onScreen = [];
-    let thumbUrl;
+    // A CAROUSEL is a post of stills, not a video: nothing to download, nothing
+    // to transcribe, and its whole content is the pictures plus the caption. It
+    // used to work only by accident — RapidAPI renders one as a slideshow video
+    // and mpdecimate happened to collapse it back to one frame per slide — so on
+    // any resolver that hands back the real images instead, every carousel
+    // failed as "no video url". Reading the slides directly also gets them at
+    // FULL resolution rather than the 720px a video frame is downscaled to.
+    const isCarousel = !videoUrl && slides?.length;
 
-    if (isImagePost) {
-      // Photo / carousel post: no video, no audio track to transcribe — every
-      // slide is OCR'd on its own. `t` is the slide's position (0, 1, 2…),
-      // not a real timestamp; ocrTimeline only needs it to keep entries in
-      // the post's own order, which is all "order" means for a carousel.
-      const imagePaths = [];
-      for (let i = 0; i < imageUrls.length; i++) {
-        const p = path.join(work, `slide-${i}.jpg`);
-        await downloadImage(imageUrls[i], p);
-        imagePaths.push({ path: p, t: i });
-      }
-      console.log(`  ${imagePaths.length} image(s) to OCR (carousel post)`);
-
-      try { onScreen = await ocrTimeline(imagePaths); }
-      catch (e) { console.warn("OCR failed:", e.message); }
-
-      if (!onScreen.length && !caption) {
-        throw new Error("No readable content (no on-screen text or caption).");
-      }
-
-      // Archive a permanent thumbnail (IG's expires) — fall back to the first
-      // slide we already downloaded rather than the resolver's cover image.
-      thumbUrl = await persistThumbnail(row, thumbnail, () => readFile(imagePaths[0].path));
+    let videoPath = null, wavPath = null, frames = [];
+    if (isCarousel) {
+      console.log(`  carousel: ${slides.length} slide(s), no video`);
+      frames = await downloadSlides(slides, path.join(work, "slides"));
+      console.log(`  ${frames.length} slide(s) to OCR`);
     } else {
       // 2. download
-      const videoPath = path.join(work, "video.mp4");
+      videoPath = path.join(work, "video.mp4");
       await downloadVideo(videoUrl, videoPath);
 
       // 3. audio + frames. Frames now cover the WHOLE video: sampled at
@@ -135,54 +126,42 @@ async function processItem(row, knownCategories = []) {
       //    survivor carrying its real timestamp.
       // wavPath is null when the reel has no audio track (silent video) — the
       // on-screen text and caption still carry it, so that's not a failure.
-      const wavPath = await extractAudio(videoPath, path.join(work, "audio.wav"));
-      const frames = await sampleTextFrames(videoPath, path.join(work, "frames"), config.ocr);
+      wavPath = await extractAudio(videoPath, path.join(work, "audio.wav"));
+      frames = await sampleTextFrames(videoPath, path.join(work, "frames"), config.ocr);
       console.log(`  ${frames.length} distinct frame(s) to OCR` +
         (frames.length ? ` (${frames[0].t.toFixed(1)}s to ${frames[frames.length - 1].t.toFixed(1)}s)` : ""));
-
-      // 4. transcript (best-effort) + on-screen text (best-effort)
-      if (wavPath) {
-        try {
-          const asr = await transcribe(wavPath);
-          transcript = asr.text;
-          segments = asr.segments;
-        } catch (e) { console.warn("Transcription failed:", e.message); }
-      }
-
-      try { onScreen = await ocrTimeline(frames); }
-      catch (e) { console.warn("OCR failed:", e.message); }
-
-      if (!transcript && !onScreen.length && !caption) {
-        throw new Error("No readable content (no speech, on-screen text, or caption).");
-      }
-
-      // 6. archive a permanent thumbnail (IG's expires) while we still have the video
-      thumbUrl = await persistThumbnail(row, thumbnail, async () => {
-        const poster = path.join(work, "poster.jpg");
-        await capturePoster(videoPath, poster);
-        return readFile(poster);
-      });
     }
+
+    // 4. transcript (best-effort) + on-screen text (best-effort)
+    let transcript = "";
+    let segments = [];
+    if (wavPath) {
+      try {
+        const asr = await transcribe(wavPath);
+        transcript = asr.text;
+        segments = asr.segments;
+      } catch (e) { console.warn("Transcription failed:", e.message); }
+    }
+
+    let onScreen = [];
+    try { onScreen = await ocrTimeline(frames); }
+    catch (e) { console.warn("OCR failed:", e.message); }
 
     const onScreenText = onScreen.map((o) => o.text).join("\n");
 
-    // 5. classify + structure. A carousel post's `t` is slide order, not a
-    // real second count — feeding it to buildTimeline would print misleading
-    // "[00:01] [ON SCREEN]" stamps that read like a fast-cut video. Passing
-    // an empty `onScreen` here (while `onScreenText` still carries every
-    // slide's real text, already joined in the post's own order) makes
-    // buildUserContent take its flat TRANSCRIPT/ON-SCREEN-TEXT fallback
-    // instead of building a false timeline.
-    const out = await structure({
-      transcript, caption, onScreenText, knownCategories,
-      segments: isImagePost ? [] : segments,
-      onScreen: isImagePost ? [] : onScreen,
-    });
-    const type = out.content_type || "other";
+    if (!transcript && !onScreenText && !caption) {
+      throw new Error(isCarousel
+        ? "No readable content (no text on any slide, and no caption)."
+        : "No readable content (no speech, on-screen text, or caption).");
+    }
+
+    // 5. classify + structure, from one interleaved timeline
+    const out = await structure({ transcript, caption, onScreenText, segments, onScreen, knownCategories });
+    // Shared with backfill-entities so the two cannot interpret a result
+    // differently (see selectResult's note).
+    const { type, sub, title: rawTitle, summary } = selectResult(out);
     const category = normalizeCategory(out.category, type);   // library bucket, or null
-    const sub = (type === "recipe" ? out.recipe : out.synopsis) || out.recipe || out.synopsis || {};
-    const title = sub.title || "Untitled";
-    const summary = sub.summary || sub.description || "";
+    const title = rawTitle || "Untitled";
 
     // Verify every entity link the model proposed (it has no web access, so it
     // guesses official URLs); dead ones are dropped, entities with none flagged.
@@ -193,12 +172,8 @@ async function processItem(row, knownCategories = []) {
       console.log(`  entities: ${sub.entities.length}, links ${before} proposed → ${after} verified`);
     }
 
-    // media_type records the FORMAT the post actually was (reel/carousel/post),
-    // separate from content_type (which is topical — recipe/howto/etc). Without
-    // it there was no way to tell a video reel from a carousel after the fact,
-    // so the library couldn't filter by format even though the pipeline above
-    // already fully processes both.
-    const mediaType = !isImagePost ? "reel" : imageUrls.length > 1 ? "carousel" : "post";
+    // 6. archive a permanent thumbnail (IG's expires) while we still have the video
+    const thumbUrl = await persistThumbnail(row, thumbnail, videoPath, work, frames[0]?.path || null);
 
     // 7. persist result + mark queue done
     const record = {
@@ -214,26 +189,18 @@ async function processItem(row, knownCategories = []) {
       on_screen_text: onScreen,
       caption,
       thumbnail_url: thumbUrl,
-      media_type: mediaType,
     };
-    // patch_019 adds `caption`, patch_037 adds `media_type`. If the worker ships
-    // before a patch is applied, PostgREST rejects the WHOLE insert over the
-    // one unknown column — which would fail a reel for a field that's only
-    // nice to have. Drop whichever column it names and retry, rather than lose
-    // the item (same defensive rule as the reel list query).
-    let attemptRecord = record;
-    let result, insErr;
-    for (let i = 0; i < 3; i++) {
+    let { data: result, error: insErr } = await supabase
+      .from("reel_results").insert(record).select().single();
+    // patch_019 adds `caption`. If the worker ships before the patch is applied,
+    // PostgREST rejects the WHOLE insert over the unknown column — which would
+    // fail a reel for a field that is only nice to have. Retry without it rather
+    // than lose the item (same defensive rule as the reel list query).
+    if (insErr && /caption/i.test(insErr.message)) {
+      console.warn("  caption column missing (run patch_019); saving without it");
+      const { caption: _omit, ...noCaption } = record;
       ({ data: result, error: insErr } = await supabase
-        .from("reel_results").insert(attemptRecord).select().single());
-      if (!insErr) break;
-      const missing = insErr.message.match(/column "?(\w+)"? of relation/i)?.[1]
-        || (/caption/i.test(insErr.message) && "caption")
-        || (/media_type/i.test(insErr.message) && "media_type");
-      if (!missing || !(missing in attemptRecord)) break;
-      console.warn(`  ${missing} column missing (run the matching patch); saving without it`);
-      const { [missing]: _omit, ...rest } = attemptRecord;
-      attemptRecord = rest;
+        .from("reel_results").insert(noCaption).select().single());
     }
     if (insErr) throw new Error("DB insert failed: " + insErr.message);
 

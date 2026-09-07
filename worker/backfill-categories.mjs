@@ -61,14 +61,28 @@ async function backfillRow(r, known = []) {
   return { changed: true, category: cat };
 }
 
-async function main() {
-  let q = supabase
-    .from("reel_results")
-    .select("id, title, content_type, category, summary, structured_json")
-    .order("created_at", { ascending: false });
-  if (onlyId) q = q.eq("id", onlyId);
+// The classifier weighs title/summary first but also reads the caption and the
+// on-screen text, so a reel whose title came back empty can still be filed from
+// what was visible in the video. Those two columns must therefore be SELECTED —
+// leaving them out does not error, it just silently classifies from less
+// (the gotcha #52b shape: a param the caller never passes).
+const COLS = "id, title, content_type, category, summary, structured_json, caption, on_screen_text";
+const COLS_NO_CAPTION = "id, title, content_type, category, summary, structured_json, on_screen_text";
 
-  const { data: rows, error } = await q;
+async function main() {
+  const run = (cols) => {
+    let q = supabase.from("reel_results").select(cols).order("created_at", { ascending: false });
+    if (onlyId) q = q.eq("id", onlyId);
+    return q;
+  };
+
+  // patch_019 added reel_results.caption; degrade rather than fail if a database
+  // predates it, same convention as the worker's insert path.
+  let { data: rows, error } = await run(COLS);
+  if (error && /caption/i.test(error.message || "")) {
+    console.warn("  (no caption column — classifying without it)");
+    ({ data: rows, error } = await run(COLS_NO_CAPTION));
+  }
   if (error) throw new Error("Could not read results: " + error.message);
 
   const targets = rows.filter((r) => all || onlyId || !r.category);

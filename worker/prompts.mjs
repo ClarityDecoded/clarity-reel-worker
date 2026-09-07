@@ -298,7 +298,18 @@ export function buildSynthesisContent(results) {
 // title/summary/detail (the video is long gone) and returns just a category,
 // so we don't re-run the whole expensive structuring + entity verification.
 // New reels get their category inline from SYSTEM_PROMPT instead.
-export const CATEGORY_PROMPT = `You sort a short social video into ONE library category for its owner, from its title and summary.
+export const CATEGORY_PROMPT = `You sort a short social video into ONE library category for its owner.
+
+EVIDENCE, IN ORDER OF WEIGHT:
+1. The title and summary. These were already written by reading the whole video, so they are
+   the most reliable statement of what it is about. When they are clear, they decide it.
+2. The caption and the text shown on screen. Use these to CONFIRM, to break a tie, or — most
+   importantly — when the title and summary are thin, empty or "Untitled". On-screen text is
+   raw and noisy (fragments, handles, interface labels), so never let it override a clear
+   title; but a reel whose only usable evidence is on screen must still be filed correctly
+   rather than left uncategorised.
+Ignore interface furniture: follow/like/share, view counts, watermarks, and the poster's own
+handle are never the subject.
 
 Return EXACTLY this JSON, nothing else: {"category": "<a lowercase slug, or null>"}
 
@@ -307,12 +318,77 @@ ${CATEGORY_GUIDE}
 
 Prefer reusing an existing category (including any others listed in the request). If the subject fits none of them, MINT a new broad lowercase slug (one or two hyphenated words) naming the general subject — do not force a fit into a wrong bucket. Return {"category": null} only if there is no coherent subject at all. Output only the JSON object.`;
 
+// How much raw on-screen text to hand the classifier. This is the CHEAP step —
+// a whole reel's OCR can run to thousands of characters, and paying that on
+// every backfilled row would undo the reason a small model is used here. A few
+// hundred characters is plenty to recognise a subject.
+const CATEGORY_OCR_CAP = 600;
+const CATEGORY_CAPTION_CAP = 400;
+
+/**
+ * Read a structuring result the SAME way everywhere.
+ *
+ * `structured_json` is FLAT and holds either the recipe shape or the synopsis
+ * shape, never both, and `content_type` is the only thing telling the renderer
+ * which one it is (gotcha #53). Deciding that in two places is how they drift:
+ * process-queue picked by TYPE while backfill-entities did `synopsis || recipe`
+ * and had no `description` fallback, so a reel the model newly recognised as a
+ * RECIPE got its recipe title written over a synopsis summary that was never
+ * replaced — leaving "Easy Midweek Courgette and Tomato Pasta" summarised as
+ * "a conversation about someone arriving home in 20 minutes", still typed
+ * "story" and still filed under relationships.
+ *
+ * Returns { type, sub, title, summary }. A recipe carries `description` where a
+ * synopsis carries `summary`; both land in `summary` here.
+ */
+export function selectResult(out = {}) {
+  const type = out.content_type || "other";
+  const sub = (type === "recipe" ? out.recipe : out.synopsis) || out.recipe || out.synopsis || {};
+  return {
+    type,
+    sub,
+    title: sub.title || "",
+    summary: sub.summary || sub.description || "",
+  };
+}
+
 export function buildCategoryContent(r) {
   const j = r.structured_json || {};
-  const bits = [`type: ${r.content_type || "other"}`];
-  if (r.title || j.title) bits.push(`title: ${r.title || j.title}`);
+  const bits = [];
+
+  // PRIMARY: written by a model that read the whole video.
+  const title = r.title || j.title || "";
+  const isUntitled = !title.trim() || /^(untitled|unknown|n\/a)$/i.test(title.trim());
+  if (title && !isUntitled) bits.push(`title: ${title}`);
   const summary = r.summary || j.summary || j.description || "";
   if (summary) bits.push(`summary: ${summary}`);
   if (j.detailed_summary) bits.push(`detail: ${j.detailed_summary}`);
+
+  // SECONDARY: the raw tracks. Included ALWAYS, not just as a fallback, because
+  // a title can be confidently wrong as easily as it can be missing — but
+  // labelled and ordered after the summary so the prompt's precedence is
+  // visible in the input itself, not just asserted in the instructions.
+  const caption = (r.caption || "").trim();
+  if (caption) bits.push(`caption (raw): ${caption.slice(0, CATEGORY_CAPTION_CAP)}`);
+
+  const onScreen = Array.isArray(r.on_screen_text)
+    ? r.on_screen_text.map((e) => (typeof e === "string" ? e : e?.text || "")).filter(Boolean).join(" / ")
+    : String(r.on_screen_text || "");
+  if (onScreen.trim()) bits.push(`on-screen text (raw, noisy): ${onScreen.trim().slice(0, CATEGORY_OCR_CAP)}`);
+
+  // content_type goes LAST and is labelled as a format, not a subject. It used
+  // to lead, which actively misled: "story" / "howto" / "other" say nothing
+  // about what a reel is ABOUT, and on exactly the reels this step needs to
+  // rescue the type is stale — a security post misread as song lyrics was typed
+  // "story", and leading with that primed the model to answer "relationships"
+  // even with a title reading "Securing MCP Servers". A recipe is handled by
+  // normalizeCategory regardless, so nothing depends on it being prominent.
+  bits.push(`format (not the subject): ${r.content_type || "other"}`);
+
+  // Said out loud when the written fields are useless, so a thin row does not
+  // look to the model like a reel with genuinely no subject.
+  if (isUntitled && !summary) {
+    bits.push("note: this reel has no usable title or summary — decide from the caption and on-screen text.");
+  }
   return bits.join("\n");
 }

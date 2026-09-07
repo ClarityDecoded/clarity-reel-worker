@@ -40,7 +40,7 @@ export const config = {
   nvidia: {
     apiKey: req("NVIDIA_API_KEY"),
     base: process.env.NVIDIA_BASE || "https://integrate.api.nvidia.com/v1",
-    llmModel: process.env.NVIDIA_LLM_MODEL || "meta/llama-3.3-70b-instruct",
+    llmModel: process.env.NVIDIA_LLM_MODEL || "moonshotai/kimi-k3",
     vlmModel: process.env.NVIDIA_VLM_MODEL || "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
   },
 

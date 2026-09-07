@@ -31,7 +31,7 @@ export function getProviders() {
   return [
     // NVIDIA build.nvidia.com — the baseline. Text + vision. Paced.
     make("nvidia", "NVIDIA_API_KEY", env("NVIDIA_BASE", "https://integrate.api.nvidia.com/v1"), {
-      text: env("NVIDIA_LLM_MODEL", "meta/llama-3.3-70b-instruct"),
+      text: env("NVIDIA_LLM_MODEL", "moonshotai/kimi-k3"),
       vision: env("NVIDIA_VLM_MODEL", "nvidia/llama-3.1-nemotron-nano-vl-8b-v1"),
     }, { priority: 2, paced: true, minGapMs: Number(env("NVIDIA_MIN_GAP_MS", 400)) }),
 
@@ -50,7 +50,13 @@ export function getProviders() {
       // If these ever 404 too, the router disables Gemini for the run after ONE
       // call rather than paying the 404 on every frame.
       text: env("GEMINI_LLM_MODEL", "gemini-flash-latest"),
-      vision: env("GEMINI_VLM_MODEL", "gemini-flash-latest"),
+      // OCR model chosen on measurement, not reputation (the Eye Chart,
+      // gotcha #90): 99% of 211 expected words across five deliberately hard
+      // images, at $0.0020 per five and 2.0s — the cheapest AND second-fastest
+      // model that scored 99%+. Its only misses in the whole chart were one
+      // "listed" and one Hindi word. OCR runs ~12x per reel, so speed and cost
+      // compound here more than anywhere else in the pipeline.
+      vision: env("GEMINI_VLM_MODEL", "gemini-3.1-flash-lite"),
     }, { priority: 3 }),
 
     // Cerebras — very high token/day ceiling, fast. Text only.
@@ -66,6 +72,17 @@ export function getProviders() {
       priority: 5,
       extraHeaders: { "HTTP-Referer": env("APP_URL", "https://portal.claritydecoded.com"), "X-Title": "Clarity Reel Worker" },
     }),
+
+    // OpenAI — the first PAID provider in this list. Everything above is a free
+    // tier, which is exactly why the whole pipeline fell over in September when
+    // five free catalogs rotted or ran out at once. A paid key doesn't rot on a
+    // quota boundary, so OpenAI (and a paid Gemini key) are the reliability
+    // floor; the free tiers stay as cost-savers above it.
+    // Text + vision come from the same multimodal model, so one id covers both.
+    make("openai", "OPENAI_API_KEY", env("OPENAI_BASE", "https://api.openai.com/v1"), {
+      text: env("OPENAI_LLM_MODEL", "gpt-4o-mini"),
+      vision: env("OPENAI_VLM_MODEL", "gpt-4o-mini"),
+    }, { priority: 0 }),
 
     // NOTE: Cloudflare Workers AI is intentionally NOT wired here — its free
     // neuron pool is reserved for actual Workers, not the reel pipeline.

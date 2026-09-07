@@ -29,10 +29,8 @@ function run(args) {
 
 // IG CDN links are signed and flaky — a dropped connection surfaces as a bare
 // undici "fetch failed". Retry transport blips and 5xx; a 4xx means the signed
-// link is dead, so don't waste retries on it. This is a plain byte-for-byte
-// download and isn't actually video-specific — downloadImage below is the
-// same function under a name that matches what it's fetching.
-async function downloadFile(url, destPath) {
+// link is dead, so don't waste retries on it.
+export async function downloadVideo(url, destPath) {
   return withRetry(
     async () => {
       const res = await fetch(url, {
@@ -52,12 +50,6 @@ async function downloadFile(url, destPath) {
     },
   );
 }
-
-export const downloadVideo = downloadFile;
-// Same CDN, same signed-link behaviour, same retry policy — a carousel
-// post's slide is fetched with exactly this. Named separately so the call
-// site in process-queue.mjs reads honestly.
-export const downloadImage = downloadFile;
 
 // Mono 16kHz WAV is the sweet spot for ASR models.
 //
@@ -240,6 +232,71 @@ function xstackLayout(n, cols) {
     parts.push(`${c === 0 ? "0" : Array(c).fill("w0").join("+")}_${r === 0 ? "0" : Array(r).fill("h0").join("+")}`);
   }
   return parts.join("|");
+}
+
+/**
+ * Download a carousel's slides and hand them back in the shape ocrTimeline
+ * already expects: [{ path, t }].
+ *
+ * `t` is the SLIDE NUMBER, not a second. There is no time in a still post, but
+ * the timeline builder and the stored on_screen_text are both keyed on `t`, and
+ * slide order IS the reading order — so using the index keeps carousels in the
+ * same shape as everything else. It also matches what the library already
+ * holds: RapidAPI renders a carousel as a one-second-per-slide slideshow, so
+ * existing carousel rows are already stored as t=0,1,2,3…
+ *
+ * Slides are used AS DOWNLOADED, at full resolution (1080x1350 on the posts
+ * checked), rather than downscaled the way video frames are — a still post is
+ * usually dense with small text, and it is only a handful of images.
+ *
+ * Best effort per slide: one dead CDN link must not cost the whole post.
+ */
+export async function downloadSlides(urls, outDir) {
+  await mkdir(outDir, { recursive: true });
+  const frames = [];
+  for (let i = 0; i < urls.length; i++) {
+    const dest = path.join(outDir, `slide-${String(i).padStart(2, "0")}.jpg`);
+    try {
+      await withRetry(async () => {
+        const res = await fetch(urls[i], { headers: { "user-agent": "Mozilla/5.0" } });
+        if (!res.ok) {
+          const err = new Error(`slide ${i + 1} HTTP ${res.status}`);
+          err.status = res.status;
+          throw err;
+        }
+        await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
+      });
+      frames.push({ path: dest, t: i });
+    } catch (e) {
+      console.warn(`  slide ${i + 1}/${urls.length} skipped: ${e.message}`);
+    }
+  }
+  return frames;
+}
+
+/**
+ * Downscale an image to `width`, keeping aspect.
+ *
+ * The Eye Chart uses this so the test sends models the SAME thing production
+ * sends: sampleTextFrames hands over frames at config.ocr.width (720), not
+ * originals. Testing at full resolution would measure a job the pipeline never
+ * actually asks for, and would flatter every model equally.
+ */
+export async function resizeImage(src, dest, width = 720) {
+  await mkdir(path.dirname(dest), { recursive: true });
+  await new Promise((resolve, reject) => {
+    const ff = spawn(ffmpegPath, [
+      "-y", "-loglevel", "error",
+      "-i", src,
+      "-vf", `scale=${width}:-2`,
+      dest,
+    ]);
+    let err = "";
+    ff.stderr.on("data", (d) => { err += d; });
+    ff.on("error", reject);
+    ff.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.slice(0, 200)}`))));
+  });
+  return dest;
 }
 
 export async function fileToBase64(filePath) {
