@@ -180,9 +180,34 @@ async function main() {
   }
   if (error) throw new Error("Could not read results: " + error.message);
 
-  const targets = rows.filter((r) => all || onlyId ||
-    !(r.structured_json?.entities?.length) || !(r.structured_json?.stocks?.length) ||
-    !r.structured_json?.universal_point);
+  // SELECT ON WHAT THIS SWEEP CAN ACTUALLY CHANGE — the ABSENCE OF A KEY, never
+  // an empty value. Two bugs lived in the old filter and together made the
+  // sweep unable to finish:
+  //
+  //   1. It read `structured_json.entities`, but for a synopsis reel the body is
+  //      nested under `.synopsis` (selectResult knows this, the filter did not),
+  //      so that test was undefined for nearly every reel and always matched.
+  //   2. `!entities?.length` selects a reel with ZERO entities — which is a
+  //      CORRECT, final outcome for a reel that names nothing concrete. Such a
+  //      reel can never satisfy the filter, so it is re-processed on every run,
+  //      forever.
+  //
+  // Observed: two consecutive runs re-did the same three reels and the backlog
+  // stayed at 266. The work was written correctly both times; the sweep simply
+  // could not advance, and would have burned ~89 runs going nowhere.
+  //
+  // A reel that predates the upgraded prompt has NO `universal_point` and NO
+  // `entities` key at all. Once re-structured it has both, even when both are
+  // empty — so it is picked exactly once.
+  const bodyOf = (r) => {
+    const sj = r.structured_json || {};
+    return sj.synopsis || sj.recipe || sj;
+  };
+  const targets = rows.filter((r) => {
+    if (all || onlyId) return true;
+    const b = bodyOf(r);
+    return !("universal_point" in b) || !("entities" in b);
+  });
   console.log(`${targets.length} reel(s) to re-extract${dry ? " (dry run)" : ""}.\n`);
 
   let changed = 0;
