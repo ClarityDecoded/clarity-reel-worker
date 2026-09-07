@@ -9,7 +9,7 @@
 // whole token budget.
 //
 //   node test-router-empty.mjs      no network, no keys
-process.env.NVIDIA_API_KEY = "k1";
+process.env.KIMI_API_KEY = "k1";
 process.env.OPENAI_API_KEY = "k2";
 process.env.LLM_COOLDOWN_MS = "1";
 process.env.NVIDIA_MIN_GAP_MS = "0";
@@ -20,7 +20,7 @@ let pass = 0, fail = 0;
 const ok = (n, c) => { c ? pass++ : fail++; console.log((c ? "PASS " : "FAIL ") + n); };
 
 // Whoever is asked FIRST answers blank; the next one answers properly. Written
-// this way on purpose: asserting "nvidia is asked first" made this test depend
+// this way on purpose: asserting a particular provider is asked first made this test depend
 // on the preference order, and it broke the moment classify was pointed at
 // OpenAI. What matters here is that a blank answer is not accepted.
 const calls = [];

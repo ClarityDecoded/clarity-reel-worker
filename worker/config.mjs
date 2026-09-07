@@ -36,13 +36,11 @@ export const config = {
     urlTemplate: process.env.RAPIDAPI_URL_TEMPLATE || "",
   },
 
-  // NVIDIA build.nvidia.com — LLM (classify + structure) and VLM (on-screen text).
-  nvidia: {
-    apiKey: req("NVIDIA_API_KEY"),
-    base: process.env.NVIDIA_BASE || "https://integrate.api.nvidia.com/v1",
-    llmModel: process.env.NVIDIA_LLM_MODEL || "moonshotai/kimi-k3",
-    vlmModel: process.env.NVIDIA_VLM_MODEL || "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
-  },
+  // NVIDIA is GONE. It was a required env var that nothing read: providers moved
+  // behind the router (gotcha #43) and this block was left behind, so `req()`
+  // would have crashed process-queue and every backfill at startup the moment
+  // the secret was deleted — for a provider that had already stopped working.
+  // A dead REQUIRED dependency is worse than a dead optional one.
 
   // Transcription lives off NVIDIA (its hosted ASR is gRPC-only). Groq by default:
   // free tier, fast, Whisper via an OpenAI-compatible REST endpoint. Swap to

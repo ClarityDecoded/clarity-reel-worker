@@ -12,13 +12,14 @@
 // it blocked the whole public build over these three fake values. The scanner is
 // right to fail closed — it cannot tell a stub from the real thing — so the fix
 // is to stop writing the shape, not to teach it an exception.
-for (const p of ["OPENAI", "GEMINI", "NVIDIA"]) {
+for (const p of ["OPENAI", "GEMINI", "KIMI", "GROQ", "OPENROUTER"]) {
   process.env[`${p}_API_KEY`] = `stub-not-a-key-${p.toLowerCase()}`;
 }
 process.env.LLM_COOLDOWN_MS = "1";
 process.env.NVIDIA_MIN_GAP_MS = "0";
 
-const { route } = await import("./router.mjs");
+const { route, PROFILES: PROFILE_NAMES } = await import("./router.mjs");
+
 
 let pass = 0, fail = 0;
 const ok = (n, c) => { c ? pass++ : fail++; console.log((c ? "PASS " : "FAIL ") + n); };
@@ -63,6 +64,52 @@ ok("ocr asks Gemini first", (await firstAskedFor("ocr", false)).includes("genera
 const openai = (await import("./providers.mjs")).getProviders().find((p) => p.name === "openai");
 ok("openai text is gpt-4o-mini", openai?.models.text === "gpt-4o-mini");
 ok("openai vision is NOT gpt-4o-mini", openai?.models.vision !== "gpt-4o-mini");
+
+// --- chain DEPTH, which is the rule these orders exist to satisfy -----------
+// Rahul's instruction, 2026-09-07: every AI step needs a backup AND a backup to
+// the backup. Probing for real that day found the arrays were mostly decoration
+// — four to seven providers listed, TWO working, and synthesize down to ONE.
+// Listing a provider is not having one, so pin the COUNT, not just the order.
+{
+  const { getProviders } = await import("./providers.mjs");
+  const keyed = new Set(getProviders().map((p) => p.name));
+  for (const task of ["structure", "classify", "synthesize", "ocr"]) {
+    const chain = PROFILE_NAMES[task].filter((n) => keyed.has(n));
+    ok(`${task} lists at least 3 candidates`, chain.length >= 3);
+  }
+}
+
+// GEMINI IS DEMOTED IN STRUCTURE, deliberately. It scored 34-45% on the
+// Comprehension Test — not by writing poor summaries but by returning valid JSON
+// in the WRONG SHAPE, which renders an empty reel page (gotcha #91g). It was the
+// only working backup for the highest-stakes call in the pipeline, which is a
+// backup that fails in a way nothing detects.
+ok("structure does not fall back to Gemini before kimi or groq", (() => {
+  const c = PROFILE_NAMES.structure;
+  return c.indexOf("gemini") > c.indexOf("kimi") && c.indexOf("gemini") > c.indexOf("groq");
+})());
+
+// The retired-model trap, four times over (#57, #91g, and Groq's own
+// llama-3.3-70b-versatile 404ing while its key worked fine for Whisper). A model
+// id that has already died must never quietly come back as a default.
+{
+  const { getProviders } = await import("./providers.mjs");
+  const byName = new Map(getProviders().map((p) => [p.name, p]));
+  // Every model id that has died under us. NVIDIA's two are kept on the list
+  // even though NVIDIA is gone, so re-adding the provider cannot quietly
+  // re-add a corpse with it.
+  const DEAD = ["llama-3.3-70b-versatile", "meta/llama-3.3-70b-instruct", "gemini-2.5-flash",
+                "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "meta-llama/llama-3.2-11b-vision-instruct:free"];
+  for (const [name, p] of byName) {
+    for (const cap of ["text", "vision"]) {
+      const m = p.models?.[cap];
+      if (!m) continue;
+      ok(`${name}.${cap} is not a known-dead model (${m})`, !DEAD.includes(m));
+    }
+  }
+}
 
 // A provider must never be reachable ONLY as a last resort by accident — every
 // provider with a key should appear somewhere in the classify order.

@@ -10,7 +10,6 @@
 
 process.env.SUPABASE_URL ||= "http://stub";
 process.env.SUPABASE_SERVICE_ROLE_KEY ||= "stub";
-process.env.NVIDIA_API_KEY ||= "stub";
 process.env.RESEND_API_KEY ||= "stub";
 process.env.OWNER_EMAIL ||= "stub@example.com";
 

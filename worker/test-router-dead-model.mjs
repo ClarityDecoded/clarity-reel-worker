@@ -9,7 +9,11 @@
 //   node test-router-dead-model.mjs
 
 process.env.GEMINI_API_KEY = "test-gemini";
-process.env.NVIDIA_API_KEY = "test-nvidia";
+// A second provider that can SEE, so failover has somewhere to land. This used
+// to be NVIDIA, whose vision model is now 410 Gone and removed from the OCR
+// chain — leaving Gemini alone there, so the first 404 threw instead of failing
+// over and this suite failed for the right reason.
+process.env.KIMI_API_KEY = "test-kimi";
 process.env.LLM_COOLDOWN_MS = "1";
 process.env.NVIDIA_MIN_GAP_MS = "0";
 
@@ -50,17 +54,17 @@ const geminiTotal = calls.filter((h) => h.includes("googleapis")).length;
 check("gemini never tried again after its model 404'd", geminiTotal === 1, geminiTotal);
 check("all 5 calls served", calls.filter((h) => !h.includes("googleapis")).length === 5, calls.length);
 
-// A 410 (retired model, e.g. NVIDIA pulling nemotron-nano-vl) is a permanent
-// per-run kill too, not just 404 — this is the exact shape that stalled
-// reel-process for days: NVIDIA 410'd on every OCR frame and was retried
-// every time anyway, burning the run into the 1-hour timeout.
-delete process.env.GEMINI_API_KEY; // isolate to nvidia so the mock can't be masked by gemini succeeding first
-process.env.OPENROUTER_API_KEY = "test-openrouter"; // second vision candidate so failover has somewhere to land
+// A 410 (a retired model — NVIDIA pulled nemotron-nano-vl exactly this way) is
+// a permanent per-run kill too, not just 404. This is the shape that stalled
+// reel-process for days: the provider 410'd on every OCR frame and was retried
+// every single time anyway, burning the run into its 1-hour timeout.
+delete process.env.GEMINI_API_KEY; // isolate, so a Gemini success cannot mask the mock
+process.env.OPENROUTER_API_KEY = "test-openrouter"; // somewhere for failover to land
 const calls2 = [];
 globalThis.fetch = async (url, _opts) => {
   const host = new URL(url).host;
   calls2.push(host);
-  if (host.includes("integrate.api.nvidia.com")) {
+  if (host.includes("api.moonshot.ai")) {
     return new Response(JSON.stringify({ error: { message: "model retired" } }), { status: 410 });
   }
   return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 });
@@ -69,11 +73,11 @@ const { route: route2 } = await import(`./router.mjs?cachebust=${Date.now()}`);
 const ask2 = () =>
   route2({ task: "ocr", capability: "vision", messages: [{ role: "user", content: "hi" }], retries: 0 });
 await ask2();
-const nvidiaFirst = calls2.filter((h) => h.includes("nvidia")).length;
-check("nvidia was tried exactly once after 410", nvidiaFirst === 1, nvidiaFirst);
+const kimiFirst = calls2.filter((h) => h.includes("moonshot")).length;
+check("the 410ing provider was tried exactly once", kimiFirst === 1, kimiFirst);
 for (let i = 0; i < 4; i++) await ask2();
-const nvidiaTotal = calls2.filter((h) => h.includes("nvidia")).length;
-check("nvidia never tried again after its model 410'd", nvidiaTotal === 1, nvidiaTotal);
+const kimiTotal = calls2.filter((h) => h.includes("moonshot")).length;
+check("...and never tried again after its model 410'd", kimiTotal === 1, kimiTotal);
 
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
 process.exit(failed ? 1 : 0);

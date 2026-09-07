@@ -15,7 +15,10 @@
 // No network, no DB, no real keys: global fetch is stubbed.
 //   node test-router-cooldown-skip.mjs
 
-process.env.NVIDIA_API_KEY = "test-nvidia";
+// Any keyed provider will do — this suite is about the COOLDOWN, not about
+// which provider. It used NVIDIA, which no longer exists (removed 2026-09-07),
+// leaving the test with no providers at all and a misleading failure.
+process.env.KIMI_API_KEY = "test-kimi";
 process.env.LLM_COOLDOWN_MS = "60000"; // real-world default, not the 1ms other tests use
 process.env.NVIDIA_MIN_GAP_MS = "0";
 
