@@ -78,10 +78,20 @@ export function getProviders() {
     // five free catalogs rotted or ran out at once. A paid key doesn't rot on a
     // quota boundary, so OpenAI (and a paid Gemini key) are the reliability
     // floor; the free tiers stay as cost-savers above it.
-    // Text + vision come from the same multimodal model, so one id covers both.
+    // TEXT AND VISION ARE DIFFERENT MODELS HERE, and assuming one id covered
+    // both was wrong. gpt-4o-mini is the right text model — it scored 100% on
+    // the Comprehension Test (gotcha #91g). It is a TRAP for vision: the Eye
+    // Chart measured 173,076 image tokens over five pictures against
+    // gpt-4.1-mini's 6,343 — TWENTY-SEVEN times as many for the same images,
+    // which makes the "mini" about 10x dearer than its own successor and 18x
+    // dearer than gpt-4o on the same chart. Nothing in a per-token rate card
+    // shows that; only measuring what a real image costs does (gotcha #90e).
+    // Vision is gpt-4o, which scored 99-100% on the hard chart — this provider
+    // is OCR's only working fallback (NVIDIA's vision model 410s, OpenRouter's
+    // 404s), so it has to be a real second opinion, not a warm body.
     make("openai", "OPENAI_API_KEY", env("OPENAI_BASE", "https://api.openai.com/v1"), {
       text: env("OPENAI_LLM_MODEL", "gpt-4o-mini"),
-      vision: env("OPENAI_VLM_MODEL", "gpt-4o-mini"),
+      vision: env("OPENAI_VLM_MODEL", "gpt-4o"),
     }, { priority: 0 }),
 
     // NOTE: Cloudflare Workers AI is intentionally NOT wired here — its free

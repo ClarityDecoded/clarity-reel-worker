@@ -57,7 +57,7 @@ check("all 5 calls served", calls.filter((h) => !h.includes("googleapis")).lengt
 delete process.env.GEMINI_API_KEY; // isolate to nvidia so the mock can't be masked by gemini succeeding first
 process.env.OPENROUTER_API_KEY = "test-openrouter"; // second vision candidate so failover has somewhere to land
 const calls2 = [];
-globalThis.fetch = async (url, opts) => {
+globalThis.fetch = async (url, _opts) => {
   const host = new URL(url).host;
   calls2.push(host);
   if (host.includes("integrate.api.nvidia.com")) {

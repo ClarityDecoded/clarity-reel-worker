@@ -5,7 +5,7 @@ process.env.SUPABASE_URL ||= "http://stub";
 process.env.SUPABASE_SERVICE_ROLE_KEY ||= "stub";
 process.env.NVIDIA_API_KEY ||= "stub";
 
-const { isTransient, isNetworkError, withRetry } = await import("./retry.mjs");
+const { isTransient, withRetry } = await import("./retry.mjs");
 const { normalizeInstagramUrl } = await import("./resolve.mjs");
 
 const eq = (a,b,l) => console.log((JSON.stringify(a)===JSON.stringify(b)?"PASS":"FAIL <<<<")+" "+l+"  got="+JSON.stringify(a));
@@ -33,11 +33,27 @@ eq(normalizeInstagramUrl("https://www.instagram.com/reels/ABC/?igsh=xyz&img_inde
 eq(normalizeInstagramUrl("not a url"), "not a url", "garbage passes through");
 eq(normalizeInstagramUrl("https://tiktok.com/x"), "https://tiktok.com/x", "non-instagram untouched");
 
-// withRetry actually retries then succeeds
+// withRetry actually retries then succeeds.
+//
+// THE OPTION NAMES HERE ARE THE POINT. This suite exists to guard gotcha #24 —
+// withRetry takes { retries, base, cap, shouldRetry, onRetry }, and an abandoned
+// branch once renamed them to { tries, baseMs, label }, which parses fine and
+// SILENTLY IGNORES everything callers pass. These two calls were themselves
+// written with `tries`/`baseMs`/`label`, so the guard was inert: the options did
+// nothing, the assertions passed on withRetry's DEFAULTS, and the one test that
+// should have caught that rename could never have caught it.
 let n = 0;
-const v = await withRetry(async () => { if (++n < 3) throw new Error("fetch failed"); return "ok"; }, { tries: 4, baseMs: 5, label: "test" });
+const v = await withRetry(async () => { if (++n < 3) throw new Error("fetch failed"); return "ok"; }, { retries: 4, base: 5, cap: 20 });
 eq([v, n], ["ok", 3], "withRetry recovers on 3rd attempt");
+// A wrong option name must not silently fall back to the default budget. Only
+// ONE retry is allowed here, so a call that ignores `retries` runs 3 times and
+// wrongly succeeds — which is exactly what the old spelling did.
+let tries = 0;
+let gaveUp = false;
+try { await withRetry(async () => { tries++; throw new Error("fetch failed"); }, { retries: 1, base: 5, cap: 20 }); }
+catch { gaveUp = true; }
+eq([tries, gaveUp], [2, true], "withRetry honours `retries` (1 retry = 2 attempts)");
 // ...and gives up immediately on a permanent error
 let m = 0;
-try { await withRetry(async () => { m++; throw new Error("PRIVATE_OR_UNAVAILABLE"); }, { tries: 4, baseMs: 5 }); } catch {}
+try { await withRetry(async () => { m++; throw new Error("PRIVATE_OR_UNAVAILABLE"); }, { retries: 4, base: 5 }); } catch {}
 eq(m, 1, "withRetry does not retry permanent errors");

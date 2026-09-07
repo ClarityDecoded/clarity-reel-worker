@@ -25,7 +25,7 @@ const ok = (n, c) => { c ? pass++ : fail++; console.log((c ? "PASS " : "FAIL ") 
 
 // Record who is asked, in order, then answer properly so the run ends.
 let asked = [];
-globalThis.fetch = async (url, opts) => {
+globalThis.fetch = async (url, _opts) => {
   asked.push(new URL(url).host);
   return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: '{"category":"ai"}' } }] }) };
 };
@@ -53,6 +53,16 @@ ok("synthesize does NOT ask OpenAI first", !(await firstAskedFor("synthesize")).
 // vision model 410s and OpenRouter's 404s, so without that fallback a single
 // Gemini rate limit stops OCR dead.
 ok("ocr asks Gemini first", (await firstAskedFor("ocr", false)).includes("generativelanguage"));
+
+// OpenAI's TEXT and VISION ids are deliberately different, and the wrong one is
+// silent: gpt-4o-mini is the correct text model and a trap for vision, costing
+// 27x the image tokens of gpt-4.1-mini for the same pictures (gotcha #90e). It
+// stayed mis-set for a day because "one multimodal id covers both" reads as
+// tidier than the truth, and no run ever errors over it — the OCR fallback just
+// quietly costs ~18x more whenever Gemini rate-limits.
+const openai = (await import("./providers.mjs")).getProviders().find((p) => p.name === "openai");
+ok("openai text is gpt-4o-mini", openai?.models.text === "gpt-4o-mini");
+ok("openai vision is NOT gpt-4o-mini", openai?.models.vision !== "gpt-4o-mini");
 
 // A provider must never be reachable ONLY as a last resort by accident — every
 // provider with a key should appear somewhere in the classify order.

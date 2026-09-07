@@ -198,7 +198,6 @@ export async function tileFrames(frames, outDir, perTile, width = 720) {
   await mkdir(outDir, { recursive: true });
 
   const cols = Math.ceil(Math.sqrt(perTile));
-  const rows = Math.ceil(perTile / cols);
   const panelW = Math.max(240, Math.round(width / cols));
   const tiles = [];
 

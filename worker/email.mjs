@@ -83,7 +83,7 @@ function synopsisCard(r) {
 // now 301/302-redirects, which Gmail's image proxy can drop) — one hop, real PNG.
 // If the image is ever blocked the surrounding link still works.
 function stockRow(s) {
-  const t = String(s?.ticker || "").trim().toUpperCase().replace(/[^A-Z.\-]/g, "");
+  const t = String(s?.ticker || "").trim().toUpperCase().replace(/[^A-Z.-]/g, "");
   if (!t) return "";
   const chart = "https://charts2-node.finviz.com/chart?w=466&h=219&bw=2&bm=1&bb=1" +
     "&t=" + t + "&tf=d&s=linear&pm=0&am=0&ct=candle_stick";

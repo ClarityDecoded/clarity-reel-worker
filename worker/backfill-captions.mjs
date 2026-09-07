@@ -78,7 +78,7 @@ async function main() {
     if (seen > 1) await sleep(GAP_MS);
     if (!r.source_url) { console.log(`- ${r.id}  no source url stored, cannot re-resolve`); gone++; continue; }
 
-    let caption = "";
+    let caption;
     try {
       // Deliberately NOT resolveReel here. That walks the tiers looking for a
       // playable VIDEO and only counts a tier as successful when it finds one —
