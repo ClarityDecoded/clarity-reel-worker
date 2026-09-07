@@ -19,7 +19,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { config } from "./config.mjs";
-import { classifyCategory } from "./nvidia.mjs";
+import { classifyCategory, llmUsageSummary } from "./nvidia.mjs";
 import { runBudget } from "./run-budget.mjs";
 import { installPrivateLogging } from "./log-privacy.mjs";
 
@@ -112,6 +112,9 @@ async function main() {
     budget.tick();
   }
   console.log(`\nDone. ${changed} reel(s) ${dry ? "would be" : "were"} categorized.`);
+  // See backfill-entities: the router is silent unless it fails over, so
+  // without this a sweep cannot tell you which provider it actually used.
+  console.log(`AI providers — ${llmUsageSummary()}`);
   console.log(budget.summary(targets.length - seen));
 }
 

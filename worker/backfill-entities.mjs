@@ -21,7 +21,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { config } from "./config.mjs";
-import { structure } from "./nvidia.mjs";
+import { structure, llmUsageSummary } from "./nvidia.mjs";
 import { selectResult } from "./prompts.mjs";
 import { verifyEntities } from "./verify.mjs";
 import { runBudget } from "./run-budget.mjs";
@@ -203,6 +203,10 @@ async function main() {
     budget.tick();
   }
   console.log(`\nDone. ${changed} reel(s) ${dry ? "would be" : "were"} updated.`);
+  // Which provider actually served the sweep. The router only logs on
+  // FAILOVER, so a clean run says nothing at all and a silent success is
+  // indistinguishable from a success on a provider nobody intended.
+  console.log(`AI providers — ${llmUsageSummary()}`);
   console.log(budget.summary(targets.length - seen));
 }
 
