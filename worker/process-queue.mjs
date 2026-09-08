@@ -302,6 +302,15 @@ async function reclaimStale() {
 
 async function runProcess() {
   console.log(`Resolver keys loaded: ${resolverStatus().total}`);
+  // SAY THE TRANSCRIPTION CHAIN OUT LOUD. It is env-overridable (ASR_MODEL,
+  // mapped into reel-process.yml), and setting that secret COLLAPSES the chain
+  // to one model without erroring — the same invisible-override shape that let
+  // a dead NVIDIA default read as healthy for twelve days (#57) and left two
+  // routing changes undeployed (#93). One line, so the run log answers "what
+  // actually listened" instead of it being inferred from the code.
+  console.log(`Transcription chain: ${
+    (config.transcription.models || []).map((l) => `${l.provider}/${l.model}`).join(" > ") || "none"
+  }`);
   await reclaimStale();
   const { data: queued, error } = await supabase
     .from("reel_queue")

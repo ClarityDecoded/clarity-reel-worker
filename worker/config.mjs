@@ -1,6 +1,10 @@
 // Central config for the reel worker. Everything is env-driven so the same
 // code runs on GitHub Actions and locally. Model / endpoint names are overridable
 // without touching code, which matters while NVIDIA's hosted model catalog shifts.
+//
+// The transcription model comes from routing.mjs, next to every other routing
+// decision, so the lab can show what production runs without a second copy here.
+import { TRANSCRIPTION } from "./routing.mjs";
 
 function req(name) {
   const v = process.env[name];
@@ -42,13 +46,29 @@ export const config = {
   // the secret was deleted — for a provider that had already stopped working.
   // A dead REQUIRED dependency is worse than a dead optional one.
 
-  // Transcription lives off NVIDIA (its hosted ASR is gRPC-only). Groq by default:
-  // free tier, fast, Whisper via an OpenAI-compatible REST endpoint. Swap to
-  // OpenAI by changing ASR_BASE + GROQ_API_KEY + ASR_MODEL.
+  // Transcription lives off the router (it is a multipart upload, not a chat
+  // completion). Groq: free tier, fast, Whisper over an OpenAI-compatible REST
+  // endpoint. `models` is the ordered CHAIN from routing.mjs — transcribe()
+  // takes the first one that answers.
+  //
+  // ASR_MODEL pins ONE model and collapses the chain, which is what you want
+  // from an env override: an operator naming a model is choosing it, not adding
+  // it to a list they cannot see. `endpoints` is keyed by provider so a link on
+  // a provider we hold no key for is SKIPPED rather than posted at Groq under
+  // its own model id — both links are Groq today, so that is the shape a future
+  // second provider slots into, not dead code doing nothing.
   transcription: {
     key: process.env.GROQ_API_KEY || "",
     base: process.env.ASR_BASE || "https://api.groq.com/openai/v1",
-    model: process.env.ASR_MODEL || "whisper-large-v3",
+    models: process.env.ASR_MODEL
+      ? [{ provider: "groq", model: process.env.ASR_MODEL }]
+      : TRANSCRIPTION,
+    endpoints: {
+      groq: {
+        key: process.env.GROQ_API_KEY || "",
+        base: process.env.ASR_BASE || "https://api.groq.com/openai/v1",
+      },
+    },
   },
 
   resend: {

@@ -22,73 +22,12 @@ import { withRetry, isTransient, isNetworkError, isRetryableStatus, sleep } from
 
 const COOLDOWN_MS = Number(process.env.LLM_COOLDOWN_MS || 60000);
 
-// Skill routing: task -> provider-name preference order. Names missing from a
-// list fall to the end, ordered by their global `priority`. A provider that
-// lacks the needed capability is filtered out regardless of the list.
-export const PROFILES = {
-  // OPENAI FIRST FOR STRUCTURE — Rahul's call, 2026-09-07, on Comprehension Test
-  // evidence (gotcha #91g). Across 5 real reels and 29 objective checks,
-  // gpt-4o-mini scored 100% at 5.6s and $0.0042 — tying the only other model
-  // that scored 100% (kimi-k3) while being 13x faster and 31x cheaper. Every
-  // Gemini model scored 34-45%, not because the summaries were poor but because
-  // they return valid JSON in the WRONG SHAPE (flat, no content_type, no
-  // synopsis wrapper), which renders an empty reel page. NVIDIA's old default
-  // was 410 Gone for twelve days and nothing surfaced it, because failover works.
-  // This is the step a new reel's title, summary AND category come from
-  // (gotcha #39), so it is the highest-stakes routing decision in the pipeline.
-  //
-  // MEASURED, 2026-09-07: 6 models x 5 fixtures x 3 PASSES, 87 checks each
-  // (worker/lab/run-comprehension.mjs). Rahul's call on the result.
-  //
-  // The top four tied on SCORE — gpt-4o-mini alone scored 100/93/93 on
-  // identical passes, so its own spread is 7 points and a 95-to-99 range means
-  // nothing. The order below is therefore decided on TIME, COST and
-  // CONSISTENCY, which is the only honest way to separate them:
-  //
-  //   cerebras   97/97/97   1.1s   $0.038/100 reels   0 retries
-  //   openrouter 100/100/97 15.2s  $0.027/100 reels   0 retries
-  //   openai     100/93/93   3.6s  $0.084/100 reels   0 retries
-  //   groq       97/97/97   29.3s  $0.036/100 reels   36 retries
-  //   kimi       72/72/72   64.2s  $4.663/100 reels   3 outright failures
-  //
-  // Cerebras leads: same score as anything, 3x faster than gpt-4o-mini and 13x
-  // faster than mistral, and perfectly consistent across passes. Rahul now pays
-  // for it, which is what makes it usable — it 402'd for months before that.
-  // The two backups are deliberately a DIFFERENT MODEL AND VENDOR each, so no
-  // single outage takes out two links.
-  //
-  // GROQ IS FOURTH DESPITE MATCHING ON SCORE: it serves the SAME model as
-  // Cerebras, so it adds no capability diversity, and 36 retries across 15 calls
-  // says its free tier cannot sustain this step.
-  //
-  // GEMINI IS REMOVED FROM STRUCTURE ENTIRELY. It scored 1/87 with 59 retries,
-  // and its failure mode is the dangerous one: valid JSON in the WRONG SHAPE
-  // (flat, no content_type, no synopsis wrapper), which renders an empty reel
-  // page and which nothing downstream detects. A fallback that fails invisibly
-  // is worse than no fallback. It remains first for OCR and synthesize, where
-  // it is measured or untested respectively — this judgement is about structure.
-  structure:  ["cerebras", "openrouter", "openai", "groq", "kimi"],
-  // OPENAI FIRST FOR CLASSIFY — Rahul's call, 2026-09-07, and it is measured
-  // rather than assumed. On the same reel, at the same moment, gpt-4o-mini
-  // answered "security" every single time while Gemini returned an empty body,
-  // then "relationships", then "medical". A wrong category is worse than no
-  // category: it files a reel somewhere you will never look for it. The others
-  // stay as FALLBACK only — the router reaches them solely when OpenAI errors,
-  // so in practice 4o-mini serves every classification.
-  classify:   ["openai", "kimi", "groq", "gemini", "cerebras", "openrouter"],
-  // Gemini stays first — unchanged and still unmeasured, so a change here would
-  // be a guess. Groq is second because synthesize is TIME-BOXED to 25s (gotcha
-  // #20) and Groq is the lowest-latency provider; kimi is behind it precisely
-  // because at 44-123s it will abort that budget every time. It is still worth
-  // listing: aborting fails safe, and the alternative was a chain of one.
-  synthesize: ["gemini", "groq", "kimi", "cerebras", "openrouter"],
-  // Gemini first on Eye Chart evidence. OPENAI IS THE FALLBACK, and it matters:
-  // NVIDIA's vision model 410s and OpenRouter's 404s, so without it Gemini is
-  // the ONLY provider that can see, and a rate limit there would stop OCR dead.
-  // gpt-4o scored 99-100% on the same chart, so the fallback is a real second
-  // opinion rather than a warm body.
-  ocr:        ["gemini", "openai", "kimi", "openrouter"],
-};
+// Skill routing lives in routing.mjs — browser-safe, so the lab can show what
+// production actually runs rather than a hand-typed copy that goes stale (the
+// NVIDIA default was 410 Gone for twelve days while the docs said otherwise).
+// Re-exported here under the name every caller already imports.
+export { PROFILES } from "./routing.mjs";
+import { PROFILES } from "./routing.mjs";
 
 // Per-provider live state for this run (module-level = lives for the whole job).
 const health = new Map(); // name -> { coolUntil, lastUsed, calls, fails, dead:Set }

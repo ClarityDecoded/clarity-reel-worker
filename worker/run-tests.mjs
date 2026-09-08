@@ -29,6 +29,7 @@ const SUITES = [
   "test-router-profiles.mjs",
   "test-run-budget.mjs",
   "test-tiled-ocr.mjs",
+  "test-transcribe-chain.mjs",
 ];
 
 let failed = [];

@@ -18,6 +18,10 @@
 // Model names are all env-overridable so a shifting free catalog never needs a
 // code change.
 
+// The model DEFAULTS live in routing.mjs, which is browser-safe, so the lab
+// reads the same ids the worker runs. An env var still overrides any of them.
+import { DEFAULT_MODELS } from "./routing.mjs";
+
 const env = (name, fallback) => process.env[name] || fallback;
 
 // Build the descriptor for one provider, or null if its key isn't set.
@@ -137,7 +141,7 @@ export function getProviders() {
       // rate limit, so Groq silently contributed nothing to three chains while its
       // key worked perfectly for Whisper. The fourth model id to rot here (#57,
       // #91g), which is why the chain depth is now probed rather than assumed.
-      text: env("GROQ_LLM_MODEL", "openai/gpt-oss-120b"),
+      text: env("GROQ_LLM_MODEL", DEFAULT_MODELS.groq.text),
     }, { priority: 1 }),
 
     // Google Gemini via its OpenAI-compatible endpoint. Native vision + generous
@@ -148,19 +152,19 @@ export function getProviders() {
       // so a retirement rolls forward instead of silently breaking the provider.
       // If these ever 404 too, the router disables Gemini for the run after ONE
       // call rather than paying the 404 on every frame.
-      text: env("GEMINI_LLM_MODEL", "gemini-flash-latest"),
+      text: env("GEMINI_LLM_MODEL", DEFAULT_MODELS.gemini.text),
       // OCR model chosen on measurement, not reputation (the Eye Chart,
       // gotcha #90): 99% of 211 expected words across five deliberately hard
       // images, at $0.0020 per five and 2.0s — the cheapest AND second-fastest
       // model that scored 99%+. Its only misses in the whole chart were one
       // "listed" and one Hindi word. OCR runs ~12x per reel, so speed and cost
       // compound here more than anywhere else in the pipeline.
-      vision: env("GEMINI_VLM_MODEL", "gemini-3.1-flash-lite"),
+      vision: env("GEMINI_VLM_MODEL", DEFAULT_MODELS.gemini.vision),
     }, { priority: 3 }),
 
     // Cerebras — very high token/day ceiling, fast. Text only.
     make("cerebras", "CEREBRAS_API_KEY", env("CEREBRAS_BASE", "https://api.cerebras.ai/v1"), {
-      text: env("CEREBRAS_LLM_MODEL", "gpt-oss-120b"),
+      text: env("CEREBRAS_LLM_MODEL", DEFAULT_MODELS.cerebras.text),
     }, { priority: 4 }),
 
     // OpenRouter — many free models behind one key (thin daily cap; last-resort).
@@ -171,8 +175,8 @@ export function getProviders() {
       // Chosen for INDEPENDENCE as much as price: a fallback that routes to the
       // same upstream as the primary is not a fallback, so vision is Gemma
       // rather than the Gemini or GPT models already sitting above it.
-      text: env("OPENROUTER_LLM_MODEL", "mistralai/mistral-small-24b-instruct-2501"),
-      vision: env("OPENROUTER_VLM_MODEL", "google/gemma-3-12b-it"),
+      text: env("OPENROUTER_LLM_MODEL", DEFAULT_MODELS.openrouter.text),
+      vision: env("OPENROUTER_VLM_MODEL", DEFAULT_MODELS.openrouter.vision),
     }, {
       priority: 5,
       extraHeaders: { "HTTP-Referer": env("APP_URL", "https://portal.claritydecoded.com"), "X-Title": "Clarity Reel Worker" },
@@ -195,8 +199,8 @@ export function getProviders() {
     // is OCR's only working fallback (NVIDIA's vision model 410s, OpenRouter's
     // 404s), so it has to be a real second opinion, not a warm body.
     make("openai", "OPENAI_API_KEY", env("OPENAI_BASE", "https://api.openai.com/v1"), {
-      text: env("OPENAI_LLM_MODEL", "gpt-4o-mini"),
-      vision: env("OPENAI_VLM_MODEL", "gpt-4o"),
+      text: env("OPENAI_LLM_MODEL", DEFAULT_MODELS.openai.text),
+      vision: env("OPENAI_VLM_MODEL", DEFAULT_MODELS.openai.vision),
     }, { priority: 0 }),
 
     // Moonshot direct. kimi-k3 was previously reachable ONLY through NVIDIA, whose
@@ -212,8 +216,8 @@ export function getProviders() {
     // deliberate 25s budget (gotcha #20), where it will simply abort and the
     // digest sends without a brief — best-effort failing safe, as designed.
     make("kimi", "KIMI_API_KEY", env("KIMI_BASE", "https://api.moonshot.ai/v1"), {
-      text: env("KIMI_LLM_MODEL", "kimi-k3"),
-      vision: env("KIMI_VLM_MODEL", "kimi-k3"),
+      text: env("KIMI_LLM_MODEL", DEFAULT_MODELS.kimi.text),
+      vision: env("KIMI_VLM_MODEL", DEFAULT_MODELS.kimi.vision),
     }, { priority: 3 }),
 
     // NOTE: Cloudflare Workers AI is intentionally NOT wired here — its free

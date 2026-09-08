@@ -22,23 +22,39 @@ const asr = config.transcription;
 // Re-export so callers/logging can read which providers carried a run.
 export { llmUsageSummary } from "./router.mjs";
 
-// ── Transcription: audio -> transcript (Groq Whisper by default) ───────────
-export async function transcribe(wavPath) {
-  if (!asr.key) throw new Error("GROQ_API_KEY not set — cannot transcribe audio.");
-  const buf = await readFile(wavPath);
+// ── Transcription: audio -> transcript (Groq Whisper chain) ───────────────
+//
+// The chain is walked in order and the FIRST model that answers wins. It is not
+// the router: there is no cooldown and no load spreading, because this is one
+// multipart upload rather than a chat completion and there is nothing to spread
+// across — the whole job of the second link is surviving the first model going
+// 410 or capacity-limited, which is exactly how NVIDIA's default died (#57).
+//
+// WHAT IT DOES NOT DO: fall back on a BAD transcript. A chain fires on an error,
+// and turbo returning fluent nonsense for a non-English reel is a 200. That
+// blind spot is named in routing.mjs and accepted, not covered here.
+async function transcribeWith(link, buf) {
+  const ep = asr.endpoints?.[link.provider];
+  // A link whose provider we hold no endpoint for is SKIPPED, never posted at
+  // whichever base happens to be configured — sending an OpenAI model id to
+  // Groq gets a 400 that reads like the model is broken.
+  if (!ep?.key || !ep?.base) return null;
+
   const form = new FormData();
   form.append("file", new Blob([buf], { type: "audio/wav" }), "audio.wav");
-  form.append("model", asr.model);
+  form.append("model", link.model);
   // verbose_json (not plain json) so we get per-segment start/end times. Those
   // timestamps are what let on-screen text be interleaved with what was being
   // said at that moment, instead of both arriving as undifferentiated blobs.
+  // Every model in this chain returns them; it is why the OpenAI transcription
+  // models were ruled out despite lower word error rates (gotcha #22).
   form.append("response_format", "verbose_json");
 
-  const data = await withRetry(
+  return withRetry(
     async () => {
-      const res = await fetch(asr.base.replace(/\/$/, "") + "/audio/transcriptions", {
+      const res = await fetch(ep.base.replace(/\/$/, "") + "/audio/transcriptions", {
         method: "POST",
-        headers: { "Authorization": "Bearer " + asr.key },
+        headers: { "Authorization": "Bearer " + ep.key },
         body: form,
       });
       if (!res.ok) {
@@ -54,6 +70,32 @@ export async function transcribe(wavPath) {
         console.warn(`Transcription retry ${attempt} in ${delay}ms: ${e.message}`),
     },
   );
+}
+
+export async function transcribe(wavPath) {
+  const chain = (asr.models || []).filter((l) => asr.endpoints?.[l.provider]?.key);
+  if (!chain.length) throw new Error("GROQ_API_KEY not set — cannot transcribe audio.");
+  const buf = await readFile(wavPath);
+
+  let data = null;
+  let last = null;
+  for (const link of chain) {
+    try {
+      data = await transcribeWith(link, buf);
+      if (data) break;
+    } catch (e) {
+      last = e;
+      // Say which link failed and that another is being tried. A silent failover
+      // is how a dead primary reads as healthy for weeks (#57, #93).
+      const next = chain[chain.indexOf(link) + 1];
+      console.warn(`Transcription ${link.provider}/${link.model} failed: ${e.message}` +
+        (next ? ` — trying ${next.provider}/${next.model}` : ""));
+    }
+  }
+  // Every link failed: rethrow the LAST error rather than a summary, so
+  // isTransient can still read its status and re-queue the reel (gotcha #25).
+  if (!data) throw last || new Error("Transcription failed: no usable endpoint.");
+
   const text = (data?.text || data?.transcript || "").trim();
   // Normalise segments to just what the timeline needs. Not every provider
   // returns them, so an empty array is a valid, non-fatal outcome.

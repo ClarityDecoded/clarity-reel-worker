@@ -145,6 +145,18 @@ Then output EXACTLY this JSON shape (no markdown, no commentary):
     "resources": [],          // names/links mentioned, if any
     "stocks": [               // publicly traded companies/tickers the video names as worth watching or buying; [] if none
       { "ticker": "", "name": "", "why": "" }   // why = one line on why it came up / what to watch
+    ],
+    "movements": [            // physical things to DO — exercises, stretches, breathwork, self-massage; [] if none
+      {
+        "name": "",           // what the video calls it
+        "lookup": "",         // the plain, standard name of the same movement, e.g. "bodyweight squat", "" if it has none
+        "kind": "exercise",   // "exercise" for training movements | "therapy" for alternative-medicine practices
+        "how": "",            // 1-2 sentences on performing it, from the video
+        "targets": [],        // body parts/muscles the VIDEO names; [] if it names none — never infer anatomy
+        "dose": null,         // EXACTLY as stated, e.g. "3 sets of 10" or "hold 30s each side"; null if not stated
+        "when": null,         // "morning" | "evening" only if the video says so; else null
+        "caution": null       // a warning the video gives; null if it gives none
+      }
     ]
   }
 }
@@ -180,6 +192,25 @@ VERIFICATION NOTE — the honest read, "verification_note":
 - Concede what is real. The pattern is: name the overstatement, then name the true version. WORKED EXAMPLE — a video claims writing a sentence 100 times "rewires your frontal cortex": "That neuroscience explanation is oversimplified — writing a sentence 100 times does not rewire the frontal cortex the way he describes. But the underlying phenomenon is real: repeated attention and rehearsal strengthen a mental association and make it easier to retrieve."
 - Judge only against what is well established. Do not invent studies, statistics, or citations to argue with the video — the never-fabricate rule applies here too. When you cannot assess a claim, say what would have to be true for it to hold rather than guessing.
 - If the video is straightforward and its claims are reasonable, leave it "". Do not manufacture a criticism.
+
+Movements — the "movements" array: extract a movement ONLY when the video actually
+teaches something to DO with the body — an exercise, a stretch, a breathing drill, a
+self-massage or pressure technique. A video that merely discusses fitness or health
+without instructing a movement returns []. Rules, all of them the never-fabricate rule
+applied to a health context, where an invented detail is worse than a missing one:
+- "dose" is EXACTLY what was said and null otherwise. Never supply a rep count, a hold
+  time or a frequency the video did not give. "Not stated" is a useful answer; an
+  invented number is instruction nobody gave.
+- "targets" lists only body parts the video NAMES. Do not infer which muscles a movement
+  works from your own knowledge of anatomy — that is a claim the video did not make.
+- "when" is set only if the video places it in a morning or evening routine.
+- "caution" carries a warning the video gives; never invent a contraindication, and never
+  omit one it did give.
+- "lookup" is the ordinary, widely used name for the same movement so it can be matched
+  against a standard exercise library — "bodyweight squat" for "air squat", "glute bridge"
+  for "hip raise". If the movement has no standard equivalent, use "".
+- "kind" separates training movements from alternative-medicine practices, because the two
+  are shown and qualified differently downstream. When in doubt, "therapy".
 
 Stocks — the "stocks" array: include a publicly traded company ONLY if that specific company or ticker was actually named in the video as an investment, a stock to watch, or a company to buy. Give the ticker symbol only when you are confident it is correct; if you are unsure of the exact symbol, OMIT that stock entirely — never guess a ticker. Leave the array [] when no tradable company was named. This is the same never-fabricate rule as everywhere else.
 

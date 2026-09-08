@@ -17,7 +17,7 @@ does not own, reached through repository secrets.
 ## Running it
 
 Needs `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`, at least one AI provider key
-(`NVIDIA_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`,
+(`OPENAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `CEREBRAS_API_KEY`, `KIMI_API_KEY`,
 `OPENROUTER_API_KEY` — the router uses whichever exist and fails over between
 them), and `RESEND_API_KEY` for the digest. See `worker/.env.example`.
 
