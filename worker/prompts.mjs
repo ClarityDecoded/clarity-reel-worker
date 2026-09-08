@@ -150,7 +150,7 @@ Then output EXACTLY this JSON shape (no markdown, no commentary):
       {
         "name": "",           // what the video calls it
         "lookup": "",         // the plain, standard name of the same movement, e.g. "bodyweight squat", "" if it has none
-        "kind": "exercise",   // "exercise" for training movements | "therapy" for alternative-medicine practices
+        "kind": "exercise",   // "exercise" | "practice" (massage, drainage, breathwork, mobility) | "intake" (herbs, supplements, food)
         "how": "",            // 1-2 sentences on performing it, from the video
         "targets": [],        // body parts/muscles the VIDEO names; [] if it names none — never infer anatomy
         "dose": null,         // EXACTLY as stated, e.g. "3 sets of 10" or "hold 30s each side"; null if not stated
@@ -209,8 +209,13 @@ applied to a health context, where an invented detail is worse than a missing on
 - "lookup" is the ordinary, widely used name for the same movement so it can be matched
   against a standard exercise library — "bodyweight squat" for "air squat", "glute bridge"
   for "hip raise". If the movement has no standard equivalent, use "".
-- "kind" separates training movements from alternative-medicine practices, because the two
-  are shown and qualified differently downstream. When in doubt, "therapy".
+- "kind" splits by whether there is a PHYSICAL ACTION to depict, which is what decides
+  whether an illustration can honestly be drawn. "exercise" is training; "practice" is any
+  other physical thing done to or with the body — massage, lymphatic drainage, breathwork,
+  mobility work, self-manipulation; "intake" is anything swallowed, applied or consumed —
+  a herb, a supplement, a tea, a diet change — where there is no movement to show at all.
+  When in doubt between exercise and practice, "practice"; when in doubt whether anything
+  is physically performed, "intake".
 
 Stocks — the "stocks" array: include a publicly traded company ONLY if that specific company or ticker was actually named in the video as an investment, a stock to watch, or a company to buy. Give the ticker symbol only when you are confident it is correct; if you are unsure of the exact symbol, OMIT that stock entirely — never guess a ticker. Leave the array [] when no tradable company was named. This is the same never-fabricate rule as everywhere else.
 

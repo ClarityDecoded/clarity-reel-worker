@@ -26,11 +26,17 @@ const COOLDOWN_MS = Number(process.env.LLM_COOLDOWN_MS || 60000);
 // production actually runs rather than a hand-typed copy that goes stale (the
 // NVIDIA default was 410 Gone for twelve days while the docs said otherwise).
 // Re-exported here under the name every caller already imports.
+// PROFILES is re-exported for the callers that already import it from here;
+// the router itself walks profileEntries, which normalises the entry shape.
 export { PROFILES } from "./routing.mjs";
-import { PROFILES } from "./routing.mjs";
+import { profileEntries } from "./routing.mjs";
 
 // Per-provider live state for this run (module-level = lives for the whole job).
-const health = new Map(); // name -> { coolUntil, lastUsed, calls, fails, dead:Set }
+// `dead` holds MODEL IDS, not capabilities. It used to hold the capability, which
+// was fine while a provider appeared at most once in a chain — but OCR now lists
+// two OpenAI models, and killing "vision" on the first one's 404 would silently
+// take the second link down with it. The 404 is about a model; record the model.
+const health = new Map(); // name -> { coolUntil, lastUsed, calls, fails, dead:Set<modelId> }
 function stat(name) {
   if (!health.has(name)) {
     health.set(name, { coolUntil: 0, lastUsed: 0, calls: 0, fails: 0, dead: new Set() });
@@ -70,25 +76,45 @@ function isModelUnavailable(err) {
     .test(String(err?.message || ""));
 }
 
-// Order the capable providers for a task: healthy first, then skill preference,
+// Order the candidate LINKS for a task: healthy first, then skill preference,
 // then global priority, then least-recently-used to spread the load.
+//
+// A LINK is one (provider, model) pair, not a provider — because a chain may
+// name the same provider twice with different models (PROFILES.ocr does). Health
+// state stays keyed by provider NAME, which is right: a rate limit is on the
+// account, not the model. Only `dead` is per model.
 function orderFor(task, capability, now) {
-  const pref = PROFILES[task] || [];
-  const rank = (p) => {
-    const i = pref.indexOf(p.name);
-    return i === -1 ? pref.length + p.priority : i;
+  const pref = profileEntries(task);
+  const named = new Set(pref.map((e) => e.provider));
+  const byName = new Map(getProviders().map((p) => [p.name, p]));
+
+  const links = [];
+  const seen = new Set();
+  const add = (p, model, rank) => {
+    if (!p || !model) return;
+    const id = `${p.name}:${model}`;
+    if (seen.has(id)) return;                 // the same link listed twice
+    seen.add(id);
+    if (stat(p.name).dead.has(model)) return; // this exact model 404'd this run
+    links.push({ p, model, rank });
   };
-  return getProviders()
-    .filter((p) => p.models[capability])
-    .filter((p) => !stat(p.name).dead.has(capability)) // model 404'd earlier this run
-    .sort((a, b) => {
-      const ca = stat(a.name).coolUntil > now ? 1 : 0;
-      const cb = stat(b.name).coolUntil > now ? 1 : 0;
-      if (ca !== cb) return ca - cb;              // healthy before cooling
-      const ra = rank(a), rb = rank(b);
-      if (ra !== rb) return ra - rb;              // skill/priority preference
-      return stat(a.name).lastUsed - stat(b.name).lastUsed; // spread load
-    });
+
+  // The profile's own order comes first, entry by entry.
+  pref.forEach((e, i) => add(byName.get(e.provider), e.model || byName.get(e.provider)?.models[capability], i));
+  // A capable provider the profile does not name is still reachable, ranked by
+  // its global priority behind everything named — unchanged behaviour.
+  for (const p of getProviders()) {
+    if (named.has(p.name)) continue;
+    add(p, p.models[capability], pref.length + p.priority);
+  }
+
+  return links.sort((a, b) => {
+    const ca = stat(a.p.name).coolUntil > now ? 1 : 0;
+    const cb = stat(b.p.name).coolUntil > now ? 1 : 0;
+    if (ca !== cb) return ca - cb;                          // healthy before cooling
+    if (a.rank !== b.rank) return a.rank - b.rank;          // skill/priority preference
+    return stat(a.p.name).lastUsed - stat(b.p.name).lastUsed; // spread load
+  });
 }
 
 // Read a 400 that names a parameter the model will not take, and return a fixed
@@ -225,23 +251,24 @@ export async function route({ task, capability = "text", messages, json = false,
   // single stalled OCR frame (Gemini's daily quota exhausted, NVIDIA+
   // OpenRouter already dead) cost ~90s each and burn a whole 1-hour run
   // without finishing its first item.
-  const ready = candidates.filter((p) => stat(p.name).coolUntil <= now);
+  const ready = candidates.filter((l) => stat(l.p.name).coolUntil <= now);
   if (ready.length === 0) {
-    const soonest = candidates.reduce((a, b) => (stat(a.name).coolUntil < stat(b.name).coolUntil ? a : b));
+    const soonest = candidates.reduce((a, b) => (stat(a.p.name).coolUntil < stat(b.p.name).coolUntil ? a : b));
     const err = new Error(
-      `All providers cooling for ${capability} (task=${task}) — soonest back is ${soonest.name} in ` +
-      `${Math.max(0, stat(soonest.name).coolUntil - now)}ms`,
+      `All providers cooling for ${capability} (task=${task}) — soonest back is ${soonest.p.name} in ` +
+      `${Math.max(0, stat(soonest.p.name).coolUntil - now)}ms`,
     );
     err.status = 503; // temporary, not permanent — isTransient (retry.mjs) must re-queue, not bury, the item
     throw err;
   }
 
   let lastErr;
-  for (const p of ready) {
+  for (const link of ready) {
+    const { p, model } = link;
     const s = stat(p.name);
     try {
       const res = await withRetry(
-        () => callOnce(p, { capability, messages, json, maxTokens, timeoutMs }),
+        () => callOnce(p, { capability, messages, json, maxTokens, timeoutMs, modelOverride: model }),
         {
           retries,
           cap,
@@ -280,13 +307,18 @@ export async function route({ task, capability = "text", messages, json = false,
       }
 
       s.calls++; s.lastUsed = Date.now();
-      if (candidates.indexOf(p) > 0) console.log(`[router] ${task}/${capability} served by ${p.name} (failover)`);
+      // Name the MODEL in the failover line, not just the provider: with two
+      // OpenAI links in the OCR chain, "served by openai (failover)" no longer
+      // says which one answered.
+      if (candidates.indexOf(link) > 0) console.log(`[router] ${task}/${capability} served by ${p.name} ${model} (failover)`);
       return res.content;
     } catch (e) {
       s.fails++; lastErr = e;
       if (isModelUnavailable(e)) {
-        s.dead.add(capability);
-        console.warn(`[router] ${p.name} has no working ${capability} model — disabled for this run: ${e.message}`);
+        // Disable THIS MODEL for the rest of the run, not the provider's whole
+        // capability — the next link may be the same provider on a live model.
+        s.dead.add(model);
+        console.warn(`[router] ${p.name} ${model} is gone — that model is disabled for this run: ${e.message}`);
       } else if (isRateLimited(e)) {
         s.coolUntil = Date.now() + COOLDOWN_MS;
         console.warn(`[router] ${p.name} rate-limited on ${task}, cooling ${COOLDOWN_MS}ms → next provider`);

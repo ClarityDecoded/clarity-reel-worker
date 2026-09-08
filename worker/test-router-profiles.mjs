@@ -19,6 +19,7 @@ process.env.LLM_COOLDOWN_MS = "1";
 process.env.NVIDIA_MIN_GAP_MS = "0";
 
 const { route, PROFILES: PROFILE_NAMES } = await import("./router.mjs");
+const { profileEntries } = await import("./routing.mjs");
 
 
 let pass = 0, fail = 0;
@@ -55,7 +56,7 @@ ok("structure asks Cerebras first", (await firstAskedFor("structure")).includes(
 // from each other, or a single outage takes out two links. Groq serves the SAME
 // model as Cerebras, so it must not be either backup.
 {
-  const top3 = PROFILE_NAMES.structure.slice(0, 3);
+  const top3 = profileEntries("structure").slice(0, 3).map((e) => e.provider);
   ok("structure's top three are three different providers", new Set(top3).size === 3);
   ok("groq is not a top-three backup (it serves the same model as cerebras)", !top3.includes("groq"));
 }
@@ -68,6 +69,31 @@ ok("synthesize does NOT ask OpenAI first", !(await firstAskedFor("synthesize")).
 // vision model 410s and OpenRouter's 404s, so without that fallback a single
 // Gemini rate limit stops OCR dead.
 ok("ocr asks Gemini first", (await firstAskedFor("ocr", false)).includes("generativelanguage"));
+
+// THE OCR CHAIN NAMES TWO MODELS OF ONE PROVIDER — Rahul's call, 2026-09-08, on
+// the Eye Chart run of 2026-09-07 00:21, where all three were measured together.
+// Pinned by MODEL, not just by provider: the whole point of that decision is
+// which OpenAI model is asked first, and a provider-only assertion could not
+// tell gpt-5.6-luna from gpt-4o and would pass however they were ordered.
+{
+  const chain = profileEntries("ocr");
+  const asStrings = chain.map((e) => `${e.provider}/${e.model || "(default)"}`);
+  ok("ocr chain is gemini, then gpt-5.6-luna, then gpt-4o",
+    asStrings.join(" > ") === "gemini/(default) > openai/gpt-5.6-luna > openai/gpt-4o",
+    asStrings.join(" > "));
+
+  // AND IT IS DELIBERATELY NARROWER THAN EVERY OTHER CHAIN. Elsewhere a backup
+  // is a different vendor so one outage cannot take two links; here both
+  // backups are OpenAI, because Gemini and OpenAI are the only vendors with a
+  // working vision model that the Eye Chart has actually measured. That is a
+  // real exposure — one bad OPENAI_API_KEY removes both backups — so it must be
+  // written down where somebody reordering this will read it, exactly the way
+  // the single-provider transcription chain has to admit itself in its caveat.
+  const vendors = new Set(chain.map((e) => e.provider));
+  ok("ocr's narrowing to two vendors is stated in routing.mjs",
+    vendors.size > 2 ||
+    /BOTH BACKUPS ARE OPENAI/.test(await (await import("node:fs/promises")).readFile("./routing.mjs", "utf8")));
+}
 
 // OpenAI's TEXT and VISION ids are deliberately different, and the wrong one is
 // silent: gpt-4o-mini is the correct text model and a trap for vision, costing
@@ -87,8 +113,10 @@ ok("openai vision is NOT gpt-4o-mini", openai?.models.vision !== "gpt-4o-mini");
 {
   const { getProviders } = await import("./providers.mjs");
   const keyed = new Set(getProviders().map((p) => p.name));
+  // Count LINKS, not provider names: an entry may pin a specific model, and
+  // PROFILES.ocr names the same provider twice on two different models.
   for (const task of ["structure", "classify", "synthesize", "ocr"]) {
-    const chain = PROFILE_NAMES[task].filter((n) => keyed.has(n));
+    const chain = profileEntries(task).filter((e) => keyed.has(e.provider));
     ok(`${task} lists at least 3 candidates`, chain.length >= 3);
   }
 }

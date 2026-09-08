@@ -78,12 +78,51 @@ export const PROFILES = {
   // because at 44-123s it will abort that budget every time. It is still worth
   // listing: aborting fails safe, and the alternative was a chain of one.
   synthesize: ["gemini", "groq", "kimi", "cerebras", "openrouter"],
-  // Gemini first on Eye Chart evidence. OPENAI IS THE FALLBACK, and it matters:
-  // NVIDIA's vision model 410s and OpenRouter's 404s, so without it Gemini is
-  // the ONLY provider that can see, and a rate limit there would stop OCR dead.
-  // gpt-4o scored 99-100% on the same chart, so the fallback is a real second
-  // opinion rather than a warm body.
-  ocr:        ["gemini", "openai", "kimi", "openrouter"],
+  // OCR: GEMINI, THEN TWO OPENAI MODELS — Rahul's call, 2026-09-08, on the Eye
+  // Chart run of 2026-09-07 00:21. All three links were measured in that one
+  // run, on the same five images, so this order is a straight read of it:
+  //
+  //   gemini  gemini-3.1-flash-lite   99.0%   2.0s   $0.0020 / 5 images
+  //   openai  gpt-5.6-luna           100.0%  22.3s   $0.0038 / 5 images
+  //   openai  gpt-4o                  99.2%   1.7s   $0.0149 / 5 images
+  //
+  // None of the three blanked or failed on any image, which is the column that
+  // actually separates vision models here — the whole gpt-5 family answers
+  // 200 OK with NOTHING on the two hard images (gotcha #90c).
+  //
+  // Gemini still leads on the same reasoning as before: it reads essentially
+  // the whole chart at the lowest price and in two seconds. OCR runs about a
+  // dozen times a reel, so price and latency compound here harder than anywhere
+  // else in the pipeline, and a fifth of a point of recall does not.
+  //
+  // BOTH BACKUPS ARE OPENAI, WHICH IS A KNOWN AND ACCEPTED NARROWING. Everywhere
+  // else in this file a chain deliberately spans vendors so one outage cannot
+  // take out two links (see structure, and gotcha #99c). It cannot here: of the
+  // providers with a key, only Gemini and OpenAI have a working vision model at
+  // all — kimi and openrouter were in the previous chain but were never measured
+  // by the Eye Chart, and a link nobody has tested is not a fallback, it is a
+  // hope. Two measured OpenAI models beat two unmeasured vendors. The exposure
+  // is real and it is exactly this: a bad OPENAI_API_KEY or an account-level
+  // rate limit takes out both backups at once, leaving Gemini alone.
+  //
+  // gpt-5.6-luna sits above gpt-4o despite being thirteen times slower because
+  // a fallback is not the hot path: it runs when Gemini is rate-limited, where
+  // being right matters more than being quick, and it is also four times
+  // cheaper than gpt-4o. gpt-4o is last as the fast one to fall back to if luna
+  // is itself unavailable.
+  //
+  // gpt-4o-mini is deliberately NOT here even though it is the TEXT model: it
+  // spent twenty-seven times as many image tokens as gpt-4.1-mini on the same
+  // five pictures, which makes the cheap-looking mini about ten times dearer to
+  // actually run (gotcha #90e).
+  //
+  // TWO ENTRIES SHARE A PROVIDER, which is why an entry may be an object. See
+  // profileEntries below.
+  ocr: [
+    "gemini",
+    { provider: "openai", model: "gpt-5.6-luna" },
+    { provider: "openai", model: "gpt-4o" },
+  ],
 };
 
 /**
@@ -154,17 +193,39 @@ export const TRANSCRIPTION = [
   { provider: "openai", model: "whisper-1" },
 ];
 
+/**
+ * Normalise a PROFILES entry. An entry is USUALLY just a provider name, meaning
+ * "use whatever model that provider is configured to serve for this capability".
+ * It may instead be `{ provider, model }` when the chain needs one exact model.
+ *
+ * WHY BOTH SHAPES. A provider-name-only chain cannot list the same provider
+ * twice with different models, and OCR now has to: the only two vendors with a
+ * working vision model are Gemini and OpenAI, so both backups are OpenAI models.
+ * Rather than a second lookup table of per-task model overrides — a second
+ * source of truth, which is the split-brain shape this codebase keeps paying for
+ * — the entry itself carries the model.
+ *
+ * Everything that walks a chain goes through here, so neither shape has to be
+ * handled twice.
+ */
+export function profileEntries(task) {
+  return (PROFILES[task] || []).map((e) =>
+    typeof e === "string"
+      ? { provider: e, model: null }
+      : { provider: e.provider, model: e.model || null });
+}
+
 /** What production runs for one step: the ordered chain, with each model named. */
 export function chainFor(task, capability = "text") {
   if (task === "transcribe") {
     return TRANSCRIPTION.map((t) => ({ provider: t.provider, model: t.model }));
   }
-  const names = PROFILES[task] || [];
-  return names.map((provider) => ({
+  return profileEntries(task).map(({ provider, model }) => ({
     provider,
-    // A provider with no model for this capability cannot serve the step at all.
-    // Named as missing rather than silently dropped: an absence in this list is
-    // exactly the sort of thing that hides a chain being one deep.
-    model: DEFAULT_MODELS[provider]?.[capability] || null,
+    // An entry's own model wins; otherwise the provider's default for this
+    // capability. A provider with neither cannot serve the step at all, and is
+    // named as missing rather than silently dropped: an absence here is exactly
+    // the sort of thing that hides a chain being one deep.
+    model: model || DEFAULT_MODELS[provider]?.[capability] || null,
   })).filter((e) => e.model);
 }
