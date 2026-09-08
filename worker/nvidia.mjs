@@ -72,30 +72,97 @@ async function transcribeWith(link, buf) {
   );
 }
 
+/**
+ * How much Whisper believes its own transcript: the mean per-segment
+ * avg_logprob, or null when the provider returned no segments.
+ *
+ * THIS IS THE ONLY USABLE SIGNAL HERE, and that is a measured claim rather
+ * than a preference. The obvious check — read the `language` the model
+ * reports — does not work: given Hindi audio, whisper-large-v3-turbo returns
+ * fluent invented ENGLISH and labels it English. It is not confused about the
+ * language, it is confident and wrong, so its own label can never catch it.
+ * Confidence does: on the same clip it reports -1.06 against -0.09 to -0.16
+ * on audio it actually understands.
+ *
+ * A confidence check is also STRICTLY BETTER than a language check would have
+ * been, which is why this is not named after the language. It catches every
+ * language the model cannot handle rather than the one language we happened to
+ * put on the chart, and it catches unintelligible audio too.
+ */
+export function asrConfidence(segments) {
+  const xs = (segments || [])
+    .map((s) => Number(s.avg_logprob))
+    .filter((n) => Number.isFinite(n));
+  if (!xs.length) return null;
+  return xs.reduce((a, b) => a + b, 0) / xs.length;
+}
+
+/** Poor enough to be worth paying another model to check. Unknown is NOT poor. */
+export function asrIsPoor(confidence, floor = asr.minConfidence) {
+  // A null confidence means the provider returned no segments, so there is
+  // nothing to judge. Treating unknown as poor would rescue EVERY reel served
+  // by such a provider and quietly double the bill for no evidence at all.
+  return confidence != null && confidence < floor;
+}
+
 export async function transcribe(wavPath) {
   const chain = (asr.models || []).filter((l) => asr.endpoints?.[l.provider]?.key);
-  if (!chain.length) throw new Error("GROQ_API_KEY not set — cannot transcribe audio.");
+  if (!chain.length) throw new Error("No transcription endpoint configured (set GROQ_API_KEY).");
   const buf = await readFile(wavPath);
 
-  let data = null;
+  let best = null;
   let last = null;
-  for (const link of chain) {
+  let rescues = 0;
+
+  for (let i = 0; i < chain.length; i++) {
+    const link = chain[i];
+    let data;
     try {
       data = await transcribeWith(link, buf);
-      if (data) break;
     } catch (e) {
       last = e;
-      // Say which link failed and that another is being tried. A silent failover
-      // is how a dead primary reads as healthy for weeks (#57, #93).
-      const next = chain[chain.indexOf(link) + 1];
+      const next = chain[i + 1];
       console.warn(`Transcription ${link.provider}/${link.model} failed: ${e.message}` +
         (next ? ` — trying ${next.provider}/${next.model}` : ""));
+      continue;
     }
+    if (!data) continue;
+
+    const got = shapeResult(data, link);
+    // KEEP THE MORE CONFIDENT TRANSCRIPT, not simply the later one. On the
+    // Hindi clip turbo scores -1.06 and large-v3 -0.29, and large-v3 is also
+    // the more ACCURATE of the two (35.5% word error against 100%), so on the
+    // one case this was built for the confident answer is the right answer.
+    // Comparing on confidence rather than position also means a rescue can
+    // never make things worse than not rescuing.
+    if (!best || (got.confidence ?? -Infinity) > (best.confidence ?? -Infinity)) best = got;
+
+    if (!asrIsPoor(best.confidence)) break;
+
+    // Poor, and there is somewhere else to ask. This is the rescue: one extra
+    // call on the rare reel the first model could not hear, not a second call
+    // on every reel.
+    if (rescues >= asr.rescueAttempts || i + 1 >= chain.length) {
+      console.warn(`Transcription confidence ${best.confidence.toFixed(3)} is below ` +
+        `${asr.minConfidence} and there is nothing left to try — keeping ` +
+        `${best.provider}/${best.model}.`);
+      break;
+    }
+    rescues++;
+    console.warn(`Transcription ${link.provider}/${link.model} sounds wrong ` +
+      `(confidence ${got.confidence.toFixed(3)}, floor ${asr.minConfidence}, ` +
+      `reported ${got.language || "unknown"}) — re-reading with ` +
+      `${chain[i + 1].provider}/${chain[i + 1].model}.`);
   }
+
   // Every link failed: rethrow the LAST error rather than a summary, so
   // isTransient can still read its status and re-queue the reel (gotcha #25).
-  if (!data) throw last || new Error("Transcription failed: no usable endpoint.");
+  if (!best) throw last || new Error("Transcription failed: no usable endpoint.");
+  return best;
+}
 
+/** One provider response -> the shape the pipeline reads. */
+function shapeResult(data, link) {
   const text = (data?.text || data?.transcript || "").trim();
   // Normalise segments to just what the timeline needs. Not every provider
   // returns them, so an empty array is a valid, non-fatal outcome.
@@ -108,7 +175,16 @@ export async function transcribe(wavPath) {
         }))
         .filter((s) => s.text)
     : [];
-  return { text, segments };
+  return {
+    text,
+    segments,
+    // Groq answers "Hindi" and OpenAI answers "hindi" for the same audio, so
+    // it is lowercased here rather than at each of the places that read it.
+    language: String(data?.language || "").toLowerCase() || null,
+    confidence: asrConfidence(data?.segments),
+    provider: link.provider,
+    model: link.model,
+  };
 }
 
 // ── VLM: frames -> on-screen text (best-effort) ───────────────────────────

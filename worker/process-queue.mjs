@@ -140,6 +140,12 @@ async function processItem(row, knownCategories = []) {
         const asr = await transcribe(wavPath);
         transcript = asr.text;
         segments = asr.segments;
+        // Which model was actually believed, and how strongly. A rescue is
+        // silent otherwise, and "the transcript came from the backup" is
+        // exactly the sort of thing that must not have to be inferred.
+        console.log(`  transcript: ${asr.provider}/${asr.model}` +
+          (asr.language ? `, ${asr.language}` : "") +
+          (asr.confidence != null ? `, confidence ${asr.confidence.toFixed(2)}` : ""));
       } catch (e) { console.warn("Transcription failed:", e.message); }
     }
 

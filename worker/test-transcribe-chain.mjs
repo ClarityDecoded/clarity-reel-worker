@@ -16,12 +16,13 @@
 process.env.SUPABASE_URL = "https://example.test";
 process.env.SUPABASE_SERVICE_ROLE_KEY = "sr";
 process.env.GROQ_API_KEY = "g1";
+process.env.OPENAI_API_KEY = "o1";
 
 import { writeFile, mkdtemp } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 
-const { transcribe } = await import("./nvidia.mjs");
+const { transcribe, asrConfidence, asrIsPoor } = await import("./nvidia.mjs");
 const { TRANSCRIPTION } = await import("./routing.mjs");
 
 let pass = 0, fail = 0;
@@ -45,7 +46,20 @@ const stub = (answers) => async (url, opts) => {
   }
   return { ok: true, status: 200, json: async () => a };
 };
-const body = { text: "hello there", segments: [{ start: 0, end: 1, text: "hello there" }] };
+// A confident answer and an unconfident one. The numbers are the real measured
+// bands: audio a model understands scores about -0.1, invented output about -1.1.
+const said = (t) => [{ start: 0, end: 1, text: t, avg_logprob: -0.1 }];
+const body = { text: "hello there", language: "English", segments: said("hello there") };
+const poor = {
+  text: "I have never eaten so much",
+  language: "English",            // it is WRONG about this, which is the whole point
+  segments: [{ start: 0, end: 1, text: "I have never eaten so much", avg_logprob: -1.06 }],
+};
+const rescued = {
+  text: "इतनी टेस्टी सब्ज़ी",
+  language: "Hindi",
+  segments: [{ start: 0, end: 1, text: "इतनी टेस्टी सब्ज़ी", avg_logprob: -0.29 }],
+};
 
 console.log("\nThe chain is walked in order");
 {
@@ -92,23 +106,91 @@ console.log("\nA link we hold no endpoint for is skipped, never misrouted");
   // model being broken, so the endpoint has to gate the link.
   const { config } = await import("./config.mjs");
   const saved = config.transcription.models;
+  // Deliberately a provider with NO endpoint entry. whisper-1 used to stand in
+  // here and stopped being a valid example the moment OpenAI became a real link
+  // in the chain — a fixture that quietly stops testing what it claims to.
   config.transcription.models = [
-    { provider: "openai", model: "whisper-1" },
+    { provider: "nowhere", model: "ghost-asr" },
     ...saved,
   ];
   asked.length = 0;
   globalThis.fetch = stub({ [TRANSCRIPTION[0].model]: body });
   const out = await transcribe(wav);
-  ok("the unconfigured provider is never called", !asked.includes("whisper-1"), asked.join(","));
+  ok("the unconfigured provider is never called", !asked.includes("ghost-asr"), asked.join(","));
   ok("the configured link still answers", out.text === "hello there");
 
   // And with NOTHING configured it must fail loudly rather than post at whatever
   // base happens to be set.
-  config.transcription.models = [{ provider: "openai", model: "whisper-1" }];
+  config.transcription.models = [{ provider: "nowhere", model: "ghost-asr" }];
   let err = null;
   try { await transcribe(wav); } catch (e) { err = e; }
   ok("no usable link is an error, not a silent empty transcript", !!err);
   config.transcription.models = saved;
+}
+
+console.log("\nA confident transcript is never second-guessed");
+{
+  asked.length = 0;
+  globalThis.fetch = stub({ [TRANSCRIPTION[0].model]: body });
+  const out = await transcribe(wav);
+  ok("one call, no rescue", asked.length === 1, asked.join(","));
+  ok("it reports which model was believed", out.provider === "groq" && out.model === TRANSCRIPTION[0].model);
+  ok("the language is lowercased for callers", out.language === "english");
+}
+
+console.log("\nAn UNCONFIDENT transcript is re-read by the next model");
+{
+  // The measured failure: given Hindi, turbo returns fluent invented English
+  // AND reports the language as English. Nothing about the response says it is
+  // wrong except how little the model believed it.
+  asked.length = 0;
+  globalThis.fetch = stub({ [TRANSCRIPTION[0].model]: poor, [TRANSCRIPTION[1].model]: rescued });
+  const out = await transcribe(wav);
+  ok("the primary answered but was not trusted", asked[0] === TRANSCRIPTION[0].model);
+  ok("the next model was asked", asked[1] === TRANSCRIPTION[1].model);
+  ok("the more confident transcript is kept", out.text === rescued.text, out.text);
+  ok("and it is attributed to the model that produced it", out.model === TRANSCRIPTION[1].model);
+  ok("a self-reported language cannot be trusted to catch this",
+    poor.language.toLowerCase() === "english");
+}
+
+console.log("\nA rescue can never make the transcript worse");
+{
+  // If the rescue comes back LESS confident than what we already had, the
+  // original stands. Taking the later answer on position rather than on
+  // confidence would replace a good transcript with a worse one.
+  asked.length = 0;
+  globalThis.fetch = stub({
+    [TRANSCRIPTION[0].model]: poor,
+    [TRANSCRIPTION[1].model]: { text: "worse", language: "English",
+      segments: [{ start: 0, end: 1, text: "worse", avg_logprob: -2.4 }] },
+  });
+  const out = await transcribe(wav);
+  ok("the better of the two is kept", out.text === poor.text, out.text);
+}
+
+console.log("\nThe rescue is bounded, and unknown confidence is not poor");
+{
+  // Every link unconfident: it must stop after the allowed rescues rather than
+  // walking the whole chain and paying three times for junk audio.
+  asked.length = 0;
+  globalThis.fetch = stub({
+    [TRANSCRIPTION[0].model]: poor,
+    [TRANSCRIPTION[1].model]: poor,
+    [TRANSCRIPTION[2].model]: poor,
+  });
+  const out = await transcribe(wav);
+  ok("it stops after one rescue, not at the end of the chain", asked.length === 2, asked.join(","));
+  ok("and still returns a transcript rather than nothing", out.text === poor.text);
+
+  // A provider that returns no segments gives no confidence at all. Treating
+  // that as poor would rescue EVERY reel it served and silently double the bill.
+  ok("no segments means unknown, not poor", asrConfidence([]) === null);
+  ok("unknown confidence never triggers a rescue", asrIsPoor(null) === false);
+  ok("a real low score does", asrIsPoor(-1.06, -0.6) === true);
+  ok("a real good score does not", asrIsPoor(-0.16, -0.6) === false);
+  // The threshold sits in a measured empty band; these are the real edges of it.
+  ok("the measured band has nothing in it", asrIsPoor(-0.29, -0.6) === false && asrIsPoor(-1.06, -0.6) === true);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

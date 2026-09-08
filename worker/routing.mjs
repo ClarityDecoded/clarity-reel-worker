@@ -134,15 +134,24 @@ export const DEFAULT_MODELS = {
  * text be interleaved with speech (gotcha #22). A better transcript with no
  * clock is a worse input to the step that reads it.
  *
- * BOTH LINKS ARE GROQ, which means this survives a dead model and NOT a dead
- * provider or a bad key. A link on another provider needs its own base url and
- * key in config.transcription before it would do anything — transcribe() skips
- * a link it holds no endpoint for rather than posting an OpenAI model id at
- * Groq.
+ * OPENAI/WHISPER-1 IS THE LAST LINK, and it is there for the failure the first
+ * two share: they are both Groq, so a dead key or a Groq outage took out the
+ * whole chain. It is the ONLY OpenAI transcription model eligible, because it
+ * is the only one that returns segments — the newer gpt-4o-transcribe family
+ * scores better on word error rate and cannot be used at any position for that
+ * reason alone. It is last because it is the slowest (7.4s against 0.6s) and
+ * roughly nine times the price of turbo per minute, which is exactly what a
+ * last resort should be.
+ *
+ * A cross-provider link only works because config.transcription.endpoints holds
+ * a base url and key per provider. transcribe() SKIPS a link it has no endpoint
+ * for rather than posting an OpenAI model id at Groq, which returns a 400 that
+ * reads exactly like the model being broken.
  */
 export const TRANSCRIPTION = [
   { provider: "groq", model: "whisper-large-v3-turbo" },
   { provider: "groq", model: "whisper-large-v3" },
+  { provider: "openai", model: "whisper-1" },
 ];
 
 /** What production runs for one step: the ordered chain, with each model named. */

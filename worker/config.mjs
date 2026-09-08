@@ -68,7 +68,34 @@ export const config = {
         key: process.env.GROQ_API_KEY || "",
         base: process.env.ASR_BASE || "https://api.groq.com/openai/v1",
       },
+      // The last link, and a different vendor on purpose: the first two are
+      // both Groq, so a bad key or a Groq outage took out the whole chain.
+      openai: {
+        key: process.env.OPENAI_API_KEY || "",
+        base: process.env.ASR_OPENAI_BASE || "https://api.openai.com/v1",
+      },
     },
+
+    // THE CONFIDENCE GATE. Turbo does not merely mistranscribe audio it cannot
+    // handle — it INVENTS fluent English and labels it English, so the model's
+    // own `language` field cannot gate anything. Whisper's per-segment
+    // avg_logprob can. Measured on the Ear Chart's five clips, mean logprob:
+    //
+    //   real English (3 clips)   -0.092, -0.117, -0.157   turbo, correct
+    //   Hindi                    -1.062                   turbo, invented
+    //   deliberately unusable    -1.266                   turbo, invented
+    //
+    // Nothing lands between -0.29 and -1.06 across any model, so -0.6 sits in
+    // the middle of an empty band. It is a THRESHOLD FROM FIVE CLIPS, which is
+    // thin evidence, so it is env-tunable and the failure is cheap in both
+    // directions: too strict costs one extra transcription, too loose costs
+    // exactly what we have today.
+    minConfidence: Number(process.env.ASR_MIN_CONFIDENCE || -0.6),
+    // How many extra links a poor result may be rescued through. One by
+    // default: turbo -> large-v3 recovers the case actually measured, and a
+    // second retry would triple the cost of every unintelligible reel to
+    // choose between two transcripts that are both invention.
+    rescueAttempts: Number(process.env.ASR_RESCUE_ATTEMPTS || 1),
   },
 
   resend: {
