@@ -38,5 +38,31 @@ ok("does not loop on the same fix", adaptPayload(once,400,"use max_completion_to
 ok("never adds a param that wasn't sent",
    adaptPayload({model:"m",messages:[]},400,"use max_completion_tokens instead")===null);
 
+// REAL 400 bodies from vendors that refuse a non-default temperature. The rule
+// used to require "unsupported / not supported / only the default", which missed
+// Kimi's wording entirely — so kimi-k3, SECOND in the structure chain, 400'd on
+// every call, adapted nothing, and scored 0/29 on the Comprehension Test while
+// being one of only two models that can score 100%.
+{
+  const bodies = [
+    ['{"error":{"message":"invalid temperature: only 1 is allowed for this model"}}', "moonshot/kimi"],
+    ['{"error":{"message":"Unsupported value: \'temperature\' does not support 0.2 with this model. Only the default (1) is supported."}}', "openai/gpt-5"],
+    ['{"error":{"message":"temperature must be 1 for this model"}}', "hypothetical phrasing"],
+    ['{"error":{"message":"temperature can only be 1"}}', "another phrasing"],
+  ];
+  for (const [body, who] of bodies) {
+    const out = adaptPayload({ model: "m", temperature: 0.2, max_tokens: 100 }, 400, body);
+    ok(`drops temperature for ${who}`, out && !("temperature" in out));
+    ok(`  ...and keeps everything else for ${who}`, out && out.max_tokens === 100 && out.model === "m");
+  }
+  // It must NOT fire on an unrelated 400, or a real error gets silently retried
+  // with a mangled payload and the actual cause is lost.
+  const unrelated = adaptPayload({ model: "m", temperature: 0.2 }, 400,
+    '{"error":{"message":"messages: at least one message is required"}}');
+  ok("leaves an unrelated 400 alone", unrelated === null);
+  // And never on a non-400 — a 429 or 503 is transient, not a bad parameter.
+  ok("ignores a 429", adaptPayload({ model: "m", temperature: 0.2 }, 429, "rate limited") === null);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);

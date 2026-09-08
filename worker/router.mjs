@@ -37,14 +37,37 @@ export const PROFILES = {
   // This is the step a new reel's title, summary AND category come from
   // (gotcha #39), so it is the highest-stakes routing decision in the pipeline.
   //
-  // GEMINI IS DEMOTED HERE, and that is the important part of this line. Probing
-  // every chain for real on 2026-09-07 found structure had exactly TWO working
-  // providers — OpenAI and Gemini — and Gemini is the one that scored 34-45% on
-  // the Comprehension Test by returning valid JSON in the WRONG SHAPE (flat, no
-  // content_type, no synopsis wrapper), which renders an empty reel page. So the
-  // only backup was one that fails in a way nothing detects. kimi-k3 scored 100%
-  // on that same test and now has a direct endpoint, so it takes second place.
-  structure:  ["openai", "kimi", "groq", "cerebras", "gemini", "openrouter"],
+  // MEASURED, 2026-09-07: 6 models x 5 fixtures x 3 PASSES, 87 checks each
+  // (worker/lab/run-comprehension.mjs). Rahul's call on the result.
+  //
+  // The top four tied on SCORE — gpt-4o-mini alone scored 100/93/93 on
+  // identical passes, so its own spread is 7 points and a 95-to-99 range means
+  // nothing. The order below is therefore decided on TIME, COST and
+  // CONSISTENCY, which is the only honest way to separate them:
+  //
+  //   cerebras   97/97/97   1.1s   $0.038/100 reels   0 retries
+  //   openrouter 100/100/97 15.2s  $0.027/100 reels   0 retries
+  //   openai     100/93/93   3.6s  $0.084/100 reels   0 retries
+  //   groq       97/97/97   29.3s  $0.036/100 reels   36 retries
+  //   kimi       72/72/72   64.2s  $4.663/100 reels   3 outright failures
+  //
+  // Cerebras leads: same score as anything, 3x faster than gpt-4o-mini and 13x
+  // faster than mistral, and perfectly consistent across passes. Rahul now pays
+  // for it, which is what makes it usable — it 402'd for months before that.
+  // The two backups are deliberately a DIFFERENT MODEL AND VENDOR each, so no
+  // single outage takes out two links.
+  //
+  // GROQ IS FOURTH DESPITE MATCHING ON SCORE: it serves the SAME model as
+  // Cerebras, so it adds no capability diversity, and 36 retries across 15 calls
+  // says its free tier cannot sustain this step.
+  //
+  // GEMINI IS REMOVED FROM STRUCTURE ENTIRELY. It scored 1/87 with 59 retries,
+  // and its failure mode is the dangerous one: valid JSON in the WRONG SHAPE
+  // (flat, no content_type, no synopsis wrapper), which renders an empty reel
+  // page and which nothing downstream detects. A fallback that fails invisibly
+  // is worse than no fallback. It remains first for OCR and synthesize, where
+  // it is measured or untested respectively — this judgement is about structure.
+  structure:  ["cerebras", "openrouter", "openai", "groq", "kimi"],
   // OPENAI FIRST FOR CLASSIFY — Rahul's call, 2026-09-07, and it is measured
   // rather than assumed. On the same reel, at the same moment, gpt-4o-mini
   // answered "security" every single time while Gemini returned an empty body,
@@ -142,8 +165,16 @@ export function adaptPayload(payload, status, body) {
     const { max_tokens, ...rest } = payload;
     return { ...rest, max_completion_tokens: max_tokens };
   }
-  // Reasoning models accept only the default temperature.
-  if (/temperature/.test(text) && /unsupported|not supported|does not support|only the default/i.test(text) && "temperature" in payload) {
+  // Reasoning models accept only the default temperature. The phrasing varies
+  // per vendor and the narrow list here did not cover Kimi's "invalid
+  // temperature: only 1 is allowed for this model" — so kimi-k3, second in the
+  // structure chain, 400'd on EVERY call and adapted nothing. Matching on the
+  // parameter name plus any refusal-shaped wording is what makes this rule
+  // survive the next vendor's phrasing; dropping temperature is always safe,
+  // since it only ever returns the model to its own default.
+  if (/temperature/i.test(text) &&
+      /unsupported|not supported|does not support|only the default|only 1 is allowed|invalid temperature|must be|can only be/i.test(text) &&
+      "temperature" in payload) {
     const { temperature, ...rest } = payload;
     return rest;
   }

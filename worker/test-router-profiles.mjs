@@ -12,7 +12,7 @@
 // it blocked the whole public build over these three fake values. The scanner is
 // right to fail closed — it cannot tell a stub from the real thing — so the fix
 // is to stop writing the shape, not to teach it an exception.
-for (const p of ["OPENAI", "GEMINI", "KIMI", "GROQ", "OPENROUTER"]) {
+for (const p of ["OPENAI", "GEMINI", "KIMI", "GROQ", "OPENROUTER", "CEREBRAS"]) {
   process.env[`${p}_API_KEY`] = `stub-not-a-key-${p.toLowerCase()}`;
 }
 process.env.LLM_COOLDOWN_MS = "1";
@@ -39,12 +39,26 @@ async function firstAskedFor(task, json = true) {
 
 ok("classify asks OpenAI first", (await firstAskedFor("classify")).includes("openai"));
 
-// STRUCTURE joined it on 2026-09-07, on Comprehension Test evidence (gotcha
-// #91g): gpt-4o-mini scored 100% of 29 objective checks at 5.6s and $0.0042,
-// tying the only other 100% while being 13x faster and 31x cheaper, and the
-// previous NVIDIA default had been 410 Gone for twelve days. This is the step a
-// reel's title, summary and category all come from, so it is pinned hardest.
-ok("structure asks OpenAI first", (await firstAskedFor("structure")).includes("openai"));
+// STRUCTURE MOVED TO CEREBRAS on 2026-09-07 — Rahul's call, on a THREE-PASS
+// Comprehension Test (6 models, 87 checks each). It replaced an OpenAI-first
+// order that this very line used to pin, and flipping a deliberate pin is the
+// justification step working rather than a test edited to pass.
+//
+// The evidence: the top four TIED on score — gpt-4o-mini alone scored
+// 100/93/93 on identical passes, so its own spread is 7 points and a 95-to-99
+// range means nothing. Cerebras won on everything else: 97% every pass, 1.1s
+// against gpt-4o-mini's 3.6s and mistral's 15.2s, $0.038 per 100 reels, zero
+// retries.
+ok("structure asks Cerebras first", (await firstAskedFor("structure")).includes("cerebras"));
+
+// The two backups must be a DIFFERENT MODEL AND VENDOR from the primary and
+// from each other, or a single outage takes out two links. Groq serves the SAME
+// model as Cerebras, so it must not be either backup.
+{
+  const top3 = PROFILE_NAMES.structure.slice(0, 3);
+  ok("structure's top three are three different providers", new Set(top3).size === 3);
+  ok("groq is not a top-three backup (it serves the same model as cerebras)", !top3.includes("groq"));
+}
 
 // Synthesize is deliberately unchanged; if it starts pointing at OpenAI too,
 // that is a routing change someone should have to justify.
@@ -79,15 +93,15 @@ ok("openai vision is NOT gpt-4o-mini", openai?.models.vision !== "gpt-4o-mini");
   }
 }
 
-// GEMINI IS DEMOTED IN STRUCTURE, deliberately. It scored 34-45% on the
-// Comprehension Test — not by writing poor summaries but by returning valid JSON
-// in the WRONG SHAPE, which renders an empty reel page (gotcha #91g). It was the
-// only working backup for the highest-stakes call in the pipeline, which is a
-// backup that fails in a way nothing detects.
-ok("structure does not fall back to Gemini before kimi or groq", (() => {
-  const c = PROFILE_NAMES.structure;
-  return c.indexOf("gemini") > c.indexOf("kimi") && c.indexOf("gemini") > c.indexOf("groq");
-})());
+// GEMINI IS OUT OF STRUCTURE ALTOGETHER: 1/87 with 59 retries across three
+// passes, and its failure is the invisible kind — valid JSON in the WRONG SHAPE
+// (flat, no content_type, no synopsis wrapper), which renders an empty reel page
+// and which nothing downstream catches. A fallback that fails silently is worse
+// than no fallback.
+//
+// Asserted as ABSENCE, not as ordering: indexOf returns -1 for a missing entry,
+// so an ordering check would pass here for entirely the wrong reason.
+ok("structure does not fall back to Gemini at all", !PROFILE_NAMES.structure.includes("gemini"));
 
 // The retired-model trap, four times over (#57, #91g, and Groq's own
 // llama-3.3-70b-versatile 404ing while its key worked fine for Whisper). A model

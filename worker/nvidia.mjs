@@ -71,7 +71,10 @@ export async function transcribe(wavPath) {
 
 // ── VLM: frames -> on-screen text (best-effort) ───────────────────────────
 
-const OCR_INSTRUCTION =
+// EXPORTED so the lab measures the prompt PRODUCTION sends. server.mjs kept its
+// own byte-identical copy; two copies of the instruction a benchmark exists to
+// test is one edit away from scoring something the pipeline does not run.
+export const OCR_INSTRUCTION =
   "Read and output only the text visible in this image, exactly as shown. " +
   "Preserve line breaks. Do not describe the image, do not add commentary. " +
   "If there is no readable text, output NONE.";
@@ -282,7 +285,9 @@ export async function structure({ transcript, caption, onScreenText, segments, o
   if (note) messages.push({ role: "system", content: note });
   messages.push({ role: "user", content: buildUserContent({ transcript, caption, onScreenText, segments, onScreen }) });
 
-  const raw = await route({ task: "structure", messages, json: true, maxTokens: 2048 });
+  // 4096: kimi-k3 truncated mid-JSON on this schema at 2048 and looked like a
+  // comprehension failure. A cap is a ceiling, not a spend — see steps.mjs.
+  const raw = await route({ task: "structure", messages, json: true, maxTokens: 4096 });
   return parseJson(raw);
 }
 
