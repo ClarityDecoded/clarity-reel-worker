@@ -64,20 +64,64 @@ export const PROFILES = {
   // is worse than no fallback. It remains first for OCR and synthesize, where
   // it is measured or untested respectively — this judgement is about structure.
   structure:  ["cerebras", "openrouter", "openai", "groq", "kimi"],
-  // OPENAI FIRST FOR CLASSIFY — Rahul's call, 2026-09-07, and it is measured
-  // rather than assumed. On the same reel, at the same moment, gpt-4o-mini
-  // answered "security" every single time while Gemini returned an empty body,
-  // then "relationships", then "medical". A wrong category is worse than no
-  // category: it files a reel somewhere you will never look for it. The others
-  // stay as FALLBACK only — the router reaches them solely when OpenAI errors,
-  // so in practice 4o-mini serves every classification.
-  classify:   ["openai", "kimi", "groq", "gemini", "cerebras", "openrouter"],
-  // Gemini stays first — unchanged and still unmeasured, so a change here would
-  // be a guess. Groq is second because synthesize is TIME-BOXED to 25s (gotcha
-  // #20) and Groq is the lowest-latency provider; kimi is behind it precisely
-  // because at 44-123s it will abort that budget every time. It is still worth
-  // listing: aborting fails safe, and the alternative was a chain of one.
-  synthesize: ["gemini", "groq", "kimi", "cerebras", "openrouter"],
+  // CEREBRAS FIRST FOR CLASSIFY — Rahul's call, 2026-09-08, on the Classify
+  // benchmark's first run (worker/lab/run-classify.mjs): 6 models x 9 fixtures
+  // x 3 passes, each fixture a reel whose category Rahul confirmed by hand.
+  //
+  //   cerebras   23/27 right (85%)   350ms    0 errors
+  //   openai     21/27 right (78%)   701ms    0 errors
+  //   openrouter 21/27 right (78%)   671ms    0 errors
+  //   kimi       19/27 right (70%)  7427ms    0 errors
+  //   groq       18/27 right (67%)  1510ms    4 retries
+  //   gemini      1/27 right  (4%) 22043ms   25 errors, 104 retries
+  //
+  // Cerebras leads: best score AND roughly twice as fast as OpenAI, the
+  // previous primary. OpenAI stays second (a different vendor, not just a
+  // different model) — the original pick was a real spot check, gpt-4o-mini
+  // answering "security" correctly every time on one reel while the prior
+  // leader returned an empty body then two wrong subjects, just never measured
+  // against a confirmed answer key until now. Openrouter/mistral is third,
+  // tied with OpenAI on score.
+  //
+  // This run ALSO caught a real bug, not a model-quality gap: maxTokens 64
+  // (sized for the one-word answer alone) truncated cerebras/kimi/groq mid-JSON
+  // because all three spend hidden reasoning tokens before writing anything
+  // visible — gotcha #86a's exact shape, never caught because this step had
+  // never been benchmarked. Fixed to 512 here and in nvidia.mjs's real
+  // classifyCategory(). And it found every model, cerebras included, sharing
+  // the SAME mistake on 3 of 9 fixtures: filing "used an AI tool for
+  // marketing/design" as "ai" instead of the real subject. That was a prompt
+  // gap in CATEGORY_GUIDE, not a model-choice one — fixed the same session, and
+  // a re-run confirmed it: every model gets all three of those fixtures right
+  // now. The scores above are from BEFORE that fix; a re-run after it landed
+  // cerebras/openai/openrouter all at 89% (16/18), the only remaining miss
+  // being menstrual_cycle, a personal-taxonomy call no content signal predicts.
+  //
+  // WORTH NAMING: cerebras is now primary for structure, classify AND
+  // synthesize below — three of five text steps on one vendor. Real
+  // concentration risk. Rahul's call to accept it rather than a reason to avoid
+  // the better-measured model.
+  classify:   ["cerebras", "openai", "openrouter", "kimi", "groq", "gemini"],
+  // CEREBRAS FIRST FOR SYNTHESIZE TOO — Rahul's call, 2026-09-08, on the
+  // Synthesize benchmark's first run (worker/lab/run-synthesize.mjs): 5 models
+  // x 2 real nights x 3 passes, scored on groundedness (no invented ticker, no
+  // padded stocks section) since this step has no single right answer to grade
+  // like a rubric of facts.
+  //
+  //   cerebras   27/27 (100%)   1208ms   0 too slow
+  //   openrouter 22/27  (81%)  10229ms   1 too slow
+  //   groq       12/27  (44%)   3490ms   0 too slow (rate limited outright)
+  //   gemini      0/27   (0%)      —     0 too slow (rate limited EVERY call)
+  //   kimi        0/27   (0%)      —     6 too slow (past the 25s budget EVERY call)
+  //
+  // Gemini was the previous primary and scored zero — rate limited on every
+  // single call across all three passes. Kimi ran past this step's hard
+  // production time budget (gotcha #20) on every call too; it is not wrong
+  // here, it is simply too slow to ever finish before the digest would abandon
+  // it. Cerebras answered every call with full marks and never once ran over
+  // budget. Openrouter/mistral is the backup — a different vendor, correct when
+  // it answers, just slow (avg 10s, one outright timeout in nine calls).
+  synthesize: ["cerebras", "openrouter", "groq", "gemini", "kimi"],
   // OCR: GEMINI, THEN TWO OPENAI MODELS — Rahul's call, 2026-09-08, on the Eye
   // Chart run of 2026-09-07 00:21. All three links were measured in that one
   // run, on the same five images, so this order is a straight read of it:

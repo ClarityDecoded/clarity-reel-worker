@@ -425,7 +425,14 @@ export async function classifyCategory(r, knownCategories) {
       // provider can take 2min+ per call under load (same unbounded behaviour as
       // structure()). withRetry still rides out transient 503s, and the router
       // fails over to another provider if one is exhausted.
-      json: true, maxTokens: 64, retries: 2, cap: 12000,
+      // Not 64. That was sized for the visible answer alone and never
+      // accounted for a reasoning-token model spending budget before it
+      // writes anything visible (gotcha #86a's shape). The Classify
+      // benchmark's first real run found cerebras, kimi and groq's
+      // gpt-oss-120b all failing at 64 ("Unexpected end of JSON input" / a
+      // JSON-validate 400) and all three answering cleanly at 512. OpenAI
+      // (the live primary) was never affected — this only bites on failover.
+      json: true, maxTokens: 512, retries: 2, cap: 12000,
     });
     return normalizeCategory(parseJson(raw).category, r.content_type);
   } catch (e) {

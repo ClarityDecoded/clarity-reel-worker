@@ -38,7 +38,17 @@ async function firstAskedFor(task, json = true) {
   return asked[0];
 }
 
-ok("classify asks OpenAI first", (await firstAskedFor("classify")).includes("openai"));
+// CLASSIFY MOVED TO CEREBRAS on 2026-09-08 — Rahul's call, on the Classify
+// benchmark's first 3-pass run (9 real, hand-confirmed fixtures). It replaced
+// an OpenAI-first order that this very line used to pin, and flipping a
+// deliberate pin is the justification step working rather than a test edited
+// to pass — the same shape as structure's move below.
+//
+// The evidence: cerebras scored 85% (23/27) against OpenAI's 78% (21/27),
+// roughly twice as fast, zero errors across all 3 passes. The same run found
+// a real maxTokens bug (fixed) and a prompt gap in CATEGORY_GUIDE (fixed and
+// re-confirmed) shared by every model, not something model choice fixes.
+ok("classify asks Cerebras first", (await firstAskedFor("classify")).includes("cerebras"));
 
 // STRUCTURE MOVED TO CEREBRAS on 2026-09-07 — Rahul's call, on a THREE-PASS
 // Comprehension Test (6 models, 87 checks each). It replaced an OpenAI-first
@@ -61,9 +71,12 @@ ok("structure asks Cerebras first", (await firstAskedFor("structure")).includes(
   ok("groq is not a top-three backup (it serves the same model as cerebras)", !top3.includes("groq"));
 }
 
-// Synthesize is deliberately unchanged; if it starts pointing at OpenAI too,
-// that is a routing change someone should have to justify.
-ok("synthesize does NOT ask OpenAI first", !(await firstAskedFor("synthesize")).includes("openai"));
+// SYNTHESIZE ALSO MOVED TO CEREBRAS on 2026-09-08, same session, on the
+// Synthesize benchmark's first 3-pass run over 2 real nights. Gemini, the
+// previous primary, scored ZERO — rate limited on every single call. Cerebras
+// scored 100% (27/27) and never once ran past this step's 25s production time
+// budget; kimi ran over budget on every call.
+ok("synthesize asks Cerebras first", (await firstAskedFor("synthesize")).includes("cerebras"));
 
 // OCR goes to Gemini on Eye Chart evidence, with OpenAI behind it — NVIDIA's
 // vision model 410s and OpenRouter's 404s, so without that fallback a single

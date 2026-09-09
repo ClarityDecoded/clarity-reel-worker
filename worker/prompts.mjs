@@ -62,10 +62,10 @@ export const CATEGORY_GUIDE = `- "stocks": investing, the stock market, specific
 - "relationships": dating, marriage, parenting, friendship, communication, and emotional connection.
 - "medical": health conditions, symptoms, medical tests and biomarkers, treatments, longevity, and clinical health.
 - "branding": brand strategy and identity — positioning, naming, packaging, brand voice, a brand's visual identity.
-- "marketing": marketing and growth — ads, content strategy, social media, copywriting, sales, and funnels.
+- "marketing": marketing and growth — ads, content strategy, social media, copywriting, sales, and funnels, INCLUDING using an AI tool to do marketing work (the subject is marketing, not AI).
 - "seo": search — SEO, ranking on Google, keywords, backlinks, technical SEO, local search, and how AI search surfaces a site.
-- "design": visual, graphic, UI, and UX design — typography, layout, design systems, and design tools.
-- "ai": AI and software tooling — AI tools, LLMs, automation, prompting, and developer tooling.
+- "design": visual, graphic, UI, and UX design — typography, layout, design systems, and design tools, INCLUDING using an AI tool to do design work (the subject is design, not AI).
+- "ai": AI and technology ITSELF as the subject — new AI capabilities, models, tools being reviewed or explained, prompting technique, developer tooling. NOT "using an AI tool to do X" for some other purpose — that files under X's own category (a reel about using ChatGPT for email outreach is "marketing", not "ai"; using Claude for design work is "design", not "ai"). Ask: is this video ABOUT AI, or just USING an AI tool to talk about something else? Only the former is "ai".
 - "recipe": a cooking recipe (usually content_type "recipe").`;
 
 export const SYSTEM_PROMPT = `You turn a short social video's transcript, on-screen text, and caption into a single clean JSON object. You are precise and never fabricate.
