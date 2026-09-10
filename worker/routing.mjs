@@ -63,7 +63,16 @@ export const PROFILES = {
   // page and which nothing downstream detects. A fallback that fails invisibly
   // is worse than no fallback. It remains first for OCR and synthesize, where
   // it is measured or untested respectively — this judgement is about structure.
-  structure:  ["cerebras", "openrouter", "openai", "groq", "kimi"],
+  //
+  // KIMI REMOVED TOO — Rahul's call, 2026-09-09, picked in the lab's own
+  // evidence table for the Comprehension Test run of 2026-09-07 5:41 PM
+  // (the table above this comment). It was already the worst-placed link by a
+  // wide margin — 64.2s and $4.663/100 reels, roughly two orders of magnitude
+  // pricier than anything else here, for a model that only TIES the leaders
+  // on score and never beats them. A fourth fallback that costly is not a
+  // safety net, it is a cost the chain almost never needed to spend. Structure
+  // now ends at groq — three vendors, not four, none of them the slow one.
+  structure:  ["cerebras", "openrouter", "openai", "groq"],
   // CEREBRAS FIRST FOR CLASSIFY — Rahul's call, 2026-09-08, on the Classify
   // benchmark's first run (worker/lab/run-classify.mjs): 6 models x 9 fixtures
   // x 3 passes, each fixture a reel whose category Rahul confirmed by hand.
@@ -121,7 +130,16 @@ export const PROFILES = {
   // it. Cerebras answered every call with full marks and never once ran over
   // budget. Openrouter/mistral is the backup — a different vendor, correct when
   // it answers, just slow (avg 10s, one outright timeout in nine calls).
-  synthesize: ["cerebras", "openrouter", "groq", "gemini", "kimi"],
+  //
+  // KIMI DROPPED FROM THE CHAIN — Rahul's call, 2026-09-09, picked in the
+  // lab's evidence table for the Synthesize benchmark run of 2026-09-08
+  // 10:08 PM. It scored 0/27 for the reason above: it ran PAST the digest's
+  // 25s hard budget on every single call (gotcha #20), so it could never
+  // actually reach the email — a link that is guaranteed too-slow is not a
+  // fallback, it is a certainty dressed up as one. Synthesize now ends at
+  // gemini rather than reaching one step further for a link that has never
+  // once finished in time.
+  synthesize: ["cerebras", "openrouter", "groq", "gemini"],
   // OCR: GEMINI, THEN TWO OPENAI MODELS — Rahul's call, 2026-09-08, on the Eye
   // Chart run of 2026-09-07 00:21. All three links were measured in that one
   // run, on the same five images, so this order is a straight read of it:
