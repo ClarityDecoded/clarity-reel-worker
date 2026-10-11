@@ -21,6 +21,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { normalizeInstagramUrl } from "./resolve.mjs";
+import { sourceOf, canonicalUrl, MAX_VIDEO_SECONDS } from "./sources.mjs";
 
 const run = promisify(execFile);
 
@@ -93,7 +94,8 @@ function classify(stderr = "") {
 }
 
 export async function resolveViaYtDlp(rawUrl) {
-  const url = normalizeInstagramUrl(rawUrl);
+  const source = sourceOf(rawUrl);
+  const url = source === "instagram" ? normalizeInstagramUrl(rawUrl) : canonicalUrl(rawUrl);
 
   let cookieDir = null;
   const args = [
@@ -113,6 +115,11 @@ export async function resolveViaYtDlp(rawUrl) {
     "--ignore-no-formats-error",
     "--socket-timeout", "20",
   ];
+  // YouTube's default format is bestvideo+bestaudio, TWO separate streams, and
+  // requested_downloads[0].url is the video-only one: it downloads fine and
+  // gives a silent reel with an empty transcript. Ask for one muxed file.
+  // Instagram is left on its default, which is already muxed and measured.
+  if (source !== "instagram") args.push("-f", "b[acodec!=none][vcodec!=none]/b");
 
   try {
     if (process.env.YTDLP_COOKIES) {
@@ -139,15 +146,65 @@ export async function resolveViaYtDlp(rawUrl) {
     }
 
     const info = JSON.parse(stdout);
+
+    // Only checked off Instagram: reels are short by nature, long-form is a
+    // YouTube/Facebook thing. Permanent for this item, so no status-looking
+    // digits in the message (isTransient would read them as an HTTP code).
+    if (source !== "instagram" && info?.duration > MAX_VIDEO_SECONDS) {
+      throw new Error(
+        `VIDEO_TOO_LONG: runs ${Math.round(info.duration / 60)} min, limit is ${Math.round(MAX_VIDEO_SECONDS / 60)} min (MAX_VIDEO_SECONDS)`,
+      );
+    }
     const videoUrl = pickVideoUrl(info);
     const slides = pickSlides(info);
+
+    // Off Instagram, a post with formats but no single sound+picture stream is
+    // normal (most YouTube is DASH: separate video and audio). Taking either
+    // alone would give a silent reel, so hand back the PAGE url and let
+    // downloadViaYtDlp fetch and merge both itself.
+    const needsMerge = source !== "instagram" && !videoUrl && !slides.length &&
+      Array.isArray(info?.formats) && info.formats.length > 0;
     return {
       videoUrl: videoUrl || null,
+      pageUrl: needsMerge ? url : null,
       slides,
       caption: info?.description || "",
       thumbnail: info?.thumbnail || info?.thumbnails?.at?.(-1)?.url || null,
       author: info?.uploader || info?.uploader_id || info?.channel || null,
     };
+  } finally {
+    if (cookieDir) await rm(cookieDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+// Download + merge a post's best audio and video into ONE mp4 at destPath.
+// Capped at 720p: the pipeline downscales frames to 720px for OCR anyway, and a
+// 4K download is minutes of runner time for pixels nothing reads.
+export async function downloadViaYtDlp(pageUrl, destPath) {
+  const { default: ffmpegPath } = await import("ffmpeg-static");
+  let cookieDir = null;
+  const args = [
+    "--no-playlist", "--no-warnings", "--no-progress",
+    "--socket-timeout", "20",
+    "-f", "bv*[height<=720]+ba/b[height<=720]/b",
+    "--merge-output-format", "mp4",
+    "--ffmpeg-location", ffmpegPath,
+    "--max-filesize", process.env.YTDLP_MAX_FILESIZE || "300M",
+    "-o", destPath,
+  ];
+  try {
+    if (process.env.YTDLP_COOKIES) {
+      cookieDir = await mkdtemp(path.join(tmpdir(), "ytdlp-"));
+      const jar = path.join(cookieDir, "cookies.txt");
+      await writeFile(jar, process.env.YTDLP_COOKIES, "utf8");
+      args.push("--cookies", jar);
+    }
+    args.push(pageUrl);
+    await run(BIN, args, { timeout: Number(process.env.YTDLP_DOWNLOAD_TIMEOUT_MS || 300_000), maxBuffer: 16 * 1024 * 1024 });
+    return destPath;
+  } catch (e) {
+    const kind = classify(e?.stderr || e?.message || "");
+    throw new Error(`yt-dlp download ${kind}: ${String(e?.stderr || e?.message || "").trim().slice(0, 200)}`, { cause: e });
   } finally {
     if (cookieDir) await rm(cookieDir, { recursive: true, force: true }).catch(() => {});
   }

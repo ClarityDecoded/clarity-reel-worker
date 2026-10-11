@@ -20,6 +20,7 @@ const SUITES = [
   "test-autofile.mjs",
   "test-caption.mjs",
   "test-carousel.mjs",
+  "test-sources.mjs",
   "test-log-privacy.mjs",
   "test-resolver-tiers.mjs",
   "test-retry.mjs",

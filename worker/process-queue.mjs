@@ -100,7 +100,7 @@ async function processItem(row, knownCategories = []) {
   const work = await mkdtemp(path.join(tmpdir(), "reel-"));
   try {
     // 1. resolve
-    const { videoUrl, slides, caption, thumbnail } = await resolveReel(row.url);
+    const { videoUrl, pageUrl, slides, caption, thumbnail } = await resolveReel(row.url);
 
     // A CAROUSEL is a post of stills, not a video: nothing to download, nothing
     // to transcribe, and its whole content is the pictures plus the caption. It
@@ -109,7 +109,7 @@ async function processItem(row, knownCategories = []) {
     // any resolver that hands back the real images instead, every carousel
     // failed as "no video url". Reading the slides directly also gets them at
     // FULL resolution rather than the 720px a video frame is downscaled to.
-    const isCarousel = !videoUrl && slides?.length;
+    const isCarousel = !videoUrl && !pageUrl && slides?.length;
 
     let videoPath = null, wavPath = null, frames = [];
     if (isCarousel) {
@@ -119,7 +119,13 @@ async function processItem(row, knownCategories = []) {
     } else {
       // 2. download
       videoPath = path.join(work, "video.mp4");
-      await downloadVideo(videoUrl, videoPath);
+      if (pageUrl) {
+        // YouTube / Facebook: yt-dlp fetches and merges the streams itself.
+        const { downloadViaYtDlp } = await import("./resolve-ytdlp.mjs");
+        await downloadViaYtDlp(pageUrl, videoPath);
+      } else {
+        await downloadVideo(videoUrl, videoPath);
+      }
 
       // 3. audio + frames. Frames now cover the WHOLE video: sampled at
       //    config.ocr.fps, near-duplicates dropped locally by mpdecimate, each

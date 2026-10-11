@@ -288,7 +288,12 @@ export function resolverOrder() {
 }
 
 export async function resolveReel(url) {
-  const order = resolverOrder();
+  // RapidAPI's template is Instagram specific; YouTube and Facebook can only
+  // be read by yt-dlp. Leave Instagram's order untouched.
+  const { sourceOf } = await import("./sources.mjs");
+  const order = sourceOf(url) === "instagram" || sourceOf(url) === "unknown"
+    ? resolverOrder()
+    : ["ytdlp"];
   if (!order.length) throw new Error("RESOLVER_ORDER names no known resolver (try: ytdlp,rapidapi)");
 
   const notes = [];
@@ -306,7 +311,7 @@ export async function resolveReel(url) {
       // the slides. Requiring a videoUrl here is what made every image post
       // look "private or unavailable": the resolver had the pictures and the
       // caption in hand and threw them away because there was no stream.
-      if (out?.videoUrl || out?.slides?.length) {
+      if (out?.videoUrl || out?.pageUrl || out?.slides?.length) {
         if (name !== order[0]) console.log(`  resolver: fell back to ${name}`);
         if (!out.videoUrl) console.log(`  resolver: carousel with ${out.slides.length} slide(s), no video`);
         return out;
@@ -319,6 +324,11 @@ export async function resolveReel(url) {
       if (e instanceof AllResolversExhausted || e?.code === "ALL_RESOLVERS_EXHAUSTED") {
         exhausted = e;
         notes.push(`${name}: quota exhausted`);
+      } else if (/^VIDEO_TOO_LONG/.test(String(e?.message))) {
+        // Permanent and specific: surface it as-is so the failure email says
+        // why, instead of folding it into "Resolver failed — …" where a
+        // duration like "450 min" would read as an HTTP status to isTransient.
+        throw e;
       } else if (e?.message === "PRIVATE_OR_UNAVAILABLE") {
         sawPrivate = true;
         notes.push(`${name}: private or unavailable`);
