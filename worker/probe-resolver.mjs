@@ -46,7 +46,25 @@ for (const url of urls) {
     try {
       const out = await tiers[name](url);
       const ms = Date.now() - t0;
-      if (out?.videoUrl) {
+      if (out?.pageUrl) {
+        // YouTube / Facebook: no single stream url, so the real test is the
+        // download + merge the pipeline will actually do. Metadata alone
+        // succeeding proves nothing about whether the bytes will come.
+        const { downloadViaYtDlp } = await import("./resolve-ytdlp.mjs");
+        const { mkdtemp, stat, rm } = await import("node:fs/promises");
+        const { tmpdir } = await import("node:os");
+        const dir = await mkdtemp(`${tmpdir()}/probe-`);
+        try {
+          const dl = await downloadViaYtDlp(out.pageUrl, `${dir}/v.mp4`);
+          const size = (await stat(dl)).size;
+          anyWorked = true;
+          console.log(`   ✓ ${name} (${Date.now() - t0}ms) — downloaded and merged, ${(size / 1e6).toFixed(1)} MB`);
+          console.log(`     author   ${out.author || "(none)"}`);
+          console.log(`     caption  ${out.caption ? JSON.stringify(out.caption.slice(0, 80)) : "(empty)"}`);
+        } finally {
+          await rm(dir, { recursive: true, force: true }).catch(() => {});
+        }
+      } else if (out?.videoUrl) {
         anyWorked = true;
         console.log(`   ✓ ${name} (${ms}ms)`);
         console.log(`     video    ${String(out.videoUrl).slice(0, 100)}`);
